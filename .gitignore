@@ -1,0 +1,4 @@
+.DS_Store
+.weaver/
+__pycache__/
+*.py[cod]

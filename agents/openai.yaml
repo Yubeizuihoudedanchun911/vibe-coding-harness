@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vibe Coding Harness"
+  short_description: "Build maintainable software from idea to verified delivery"
+  default_prompt: "Use $vibe-coding-harness to turn this product idea into a maintainable, verified implementation."
