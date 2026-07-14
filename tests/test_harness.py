@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "scripts" / "harness.py"
+HARNESS_SPEC = importlib.util.spec_from_file_location("harness_under_test", HARNESS)
+if HARNESS_SPEC is None or HARNESS_SPEC.loader is None:
+    raise RuntimeError(f"cannot load harness module: {HARNESS}")
+HARNESS_MODULE = importlib.util.module_from_spec(HARNESS_SPEC)
+sys.modules[HARNESS_SPEC.name] = HARNESS_MODULE
+HARNESS_SPEC.loader.exec_module(HARNESS_MODULE)
 
 
 class HarnessCliTests(unittest.TestCase):
@@ -217,6 +225,104 @@ class HarnessCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_second_round_rejects_a_null_latest_verdict(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nFAIL\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "BUILDING",
+                "active_round": 2,
+                "latest_verdict": None,
+                "next_action": "Dispatch Generator.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "active_round greater than 1 requires a non-null latest_verdict",
+            result.stdout,
+        )
+
+    def test_next_round_rejects_a_previous_pass_review(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nPASS\n\n## Evidence\n\nVerified.\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "BUILDING",
+                "active_round": 2,
+                "latest_verdict": "FAIL",
+                "next_action": "Fix the failed criterion.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("previous review Overall verdict must be FAIL", result.stdout)
+
+    def test_unverified_cannot_advance_without_a_previous_fail(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nUNVERIFIED\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/002/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/002/review.md",
+            "# Review\n\n## Overall verdict\n\nUNVERIFIED\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "EVALUATING",
+                "active_round": 2,
+                "latest_verdict": "UNVERIFIED",
+                "next_action": "Collect runtime evidence.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("previous review Overall verdict must be FAIL", result.stdout)
+
     def test_unverified_keeps_the_same_evaluation_round(self) -> None:
         self.assertEqual(self._init().returncode, 0)
         self._write_artifact(
@@ -228,7 +334,7 @@ class HarnessCliTests(unittest.TestCase):
         )
         self._write_artifact(
             ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
-            "# Review\n\n## Attempt 1\n\nUNVERIFIED\n",
+            "# Review\n\n## Overall verdict\n\nUNVERIFIED\n",
         )
         state = self._load_state()
         state.update(
@@ -327,6 +433,203 @@ class HarnessCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PASS review requires evidence", result.stdout)
 
+    def test_pass_in_evidence_cannot_override_overall_fail(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nFAIL\n\n## Evidence\n\nPASS\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "status": "ACCEPTED",
+                "phase": "EVALUATING",
+                "latest_verdict": "PASS",
+                "next_action": "Delivery complete.",
+                "last_good_revision": self.revision,
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "current review Overall verdict must equal latest_verdict PASS",
+            result.stdout,
+        )
+
+    def test_empty_evidence_is_not_filled_by_following_risks_section(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nPASS\n\n## Evidence\n\n"
+            "## Risks\n\nKnown limitation.\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "status": "ACCEPTED",
+                "phase": "EVALUATING",
+                "latest_verdict": "PASS",
+                "next_action": "Delivery complete.",
+                "last_good_revision": self.revision,
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASS review requires evidence", result.stdout)
+
+    def test_state_verdict_must_match_current_review_overall_verdict(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nPASS\n\n## Evidence\n\nVerified.\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "EVALUATING",
+                "latest_verdict": "UNVERIFIED",
+                "next_action": "Collect runtime evidence.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "current review Overall verdict must equal latest_verdict UNVERIFIED",
+            result.stdout,
+        )
+
+    def test_overall_verdict_requires_one_substantive_value(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nPASS\nFAIL\n\n"
+            "## Evidence\n\nVerified.\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "status": "ACCEPTED",
+                "phase": "EVALUATING",
+                "latest_verdict": "PASS",
+                "next_action": "Delivery complete.",
+                "last_good_revision": self.revision,
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "current review Overall verdict must equal latest_verdict PASS",
+            result.stdout,
+        )
+
+    def test_final_check_rejects_a_fresh_active_requirement(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("final check requires status ACCEPTED", result.stdout)
+
+    def test_final_check_rejects_an_active_pass_requirement(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nPASS\n\n## Evidence\n\nVerified.\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "EVALUATING",
+                "latest_verdict": "PASS",
+                "next_action": "Run Goal Gate.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("final check requires status ACCEPTED", result.stdout)
+
+    def test_final_check_rejects_a_degraded_requirement(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "status": "DEGRADED",
+                "degradation_acceptance": "Accepted by the user.",
+                "next_action": "Delivery complete with known gaps.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("final check requires status ACCEPTED", result.stdout)
+
     def test_terminal_requirement_requires_a_nonempty_plan(self) -> None:
         self.assertEqual(self._init().returncode, 0)
         state = self._load_state()
@@ -377,6 +680,159 @@ class HarnessCliTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("last_good_revision does not resolve", result.stderr)
+
+    def test_check_rejects_head_as_last_good_revision(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        state = self._load_state()
+        state["last_good_revision"] = "HEAD"
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "last_good_revision must be a canonical full commit OID",
+            result.stdout,
+        )
+
+    def test_check_rejects_a_branch_as_last_good_revision(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        branch = self._git("symbolic-ref", "--short", "HEAD").stdout.strip()
+        state = self._load_state()
+        state["last_good_revision"] = branch
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "last_good_revision must be a canonical full commit OID",
+            result.stdout,
+        )
+
+    def test_check_rejects_a_short_sha_as_last_good_revision(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        state = self._load_state()
+        state["last_good_revision"] = self.revision[:12]
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "last_good_revision must be a canonical full commit OID",
+            result.stdout,
+        )
+
+    def test_check_returns_the_same_state_snapshot_that_it_validates(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        validated_state = self._load_state()
+        changed_state = {**validated_state, "goal": "Changed after validation"}
+
+        with mock.patch.object(
+            HARNESS_MODULE,
+            "_load_state",
+            side_effect=[validated_state, changed_state],
+        ) as load_state:
+            result, valid = HARNESS_MODULE.check(self.target, "REQ-001")
+
+        self.assertTrue(valid, result)
+        self.assertEqual(load_state.call_count, 1)
+        self.assertEqual(result["goal"], validated_state["goal"])
+
+    def test_resume_returns_the_same_state_snapshot_that_it_validates(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        validated_state = self._load_state()
+        changed_state = {**validated_state, "goal": "Changed after validation"}
+
+        with mock.patch.object(
+            HARNESS_MODULE,
+            "_load_state",
+            side_effect=[validated_state, changed_state],
+        ) as load_state:
+            result = HARNESS_MODULE.init(self.target, None, True, "REQ-001")
+
+        self.assertEqual(load_state.call_count, 1)
+        self.assertEqual(result["goal"], validated_state["goal"])
+
+    def test_current_review_is_read_once_per_check(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nPASS\n\n## Evidence\n\nVerified.\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "status": "ACCEPTED",
+                "phase": "EVALUATING",
+                "latest_verdict": "PASS",
+                "next_action": "Delivery complete.",
+                "last_good_revision": self.revision,
+            }
+        )
+        self._write_state("REQ-001", state)
+        review_path = self._round_root() / "review.md"
+        original_read_text = Path.read_text
+        review_reads = 0
+
+        def counting_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            nonlocal review_reads
+            if path == review_path:
+                review_reads += 1
+            return original_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", counting_read_text):
+            result, valid = HARNESS_MODULE.check(self.target, "REQ-001")
+
+        self.assertTrue(valid, result)
+        self.assertEqual(review_reads, 1)
+
+    def test_previous_review_is_read_once_per_check(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/review.md",
+            "# Review\n\n## Overall verdict\n\nFAIL\n",
+        )
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "BUILDING",
+                "active_round": 2,
+                "latest_verdict": "FAIL",
+                "next_action": "Fix the failed criterion.",
+            }
+        )
+        self._write_state("REQ-001", state)
+        review_path = self._round_root() / "review.md"
+        original_read_text = Path.read_text
+        review_reads = 0
+
+        def counting_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            nonlocal review_reads
+            if path == review_path:
+                review_reads += 1
+            return original_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", counting_read_text):
+            result, valid = HARNESS_MODULE.check(self.target, "REQ-001")
+
+        self.assertTrue(valid, result)
+        self.assertEqual(review_reads, 1)
 
     def test_init_rejects_legacy_global_state(self) -> None:
         control_root = self.target / ".vibe-coding"

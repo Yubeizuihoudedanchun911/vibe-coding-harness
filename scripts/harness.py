@@ -96,14 +96,21 @@ def _revision(target: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _revision_exists(target: Path, revision: str) -> bool:
+def _resolve_revision(target: Path, revision: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(target), "cat-file", "-e", f"{revision}^{{commit}}"],
+        [
+            "git",
+            "-C",
+            str(target),
+            "rev-parse",
+            "--verify",
+            f"{revision}^{{commit}}",
+        ],
         check=False,
         capture_output=True,
         text=True,
     )
-    return result.returncode == 0
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _control_paths(target: Path) -> tuple[Path, Path]:
@@ -218,29 +225,44 @@ def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _non_empty_file(path: Path) -> bool:
+def _read_file(path: Path) -> str | None:
     try:
-        return path.is_file() and bool(path.read_text(encoding="utf-8").strip())
+        return path.read_text(encoding="utf-8") if path.is_file() else None
     except (OSError, UnicodeError):
-        return False
+        return None
 
 
-def _require_artifact(errors: list[str], path: Path, message: str) -> None:
-    if not _non_empty_file(path):
-        errors.append(message)
+def _markdown_level_two_section(body: str, title: str) -> str | None:
+    headings = list(
+        re.finditer(r"(?m)^##[ \t]+([^\r\n]*?)[ \t]*\r?$", body)
+    )
+    selected = [
+        (index, match)
+        for index, match in enumerate(headings)
+        if match.group(1) == title
+    ]
+    if len(selected) != 1:
+        return None
+    index, match = selected[0]
+    end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
+    return body[match.end() : end]
 
 
-def _pass_review_has_evidence(path: Path) -> bool:
-    try:
-        body = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+def _review_verdict(body: str | None) -> str | None:
+    if body is None:
+        return None
+    section = _markdown_level_two_section(body, "Overall verdict")
+    if section is None:
+        return None
+    values = [line.strip() for line in section.splitlines() if line.strip()]
+    return values[0] if len(values) == 1 else None
+
+
+def _review_has_evidence(body: str | None) -> bool:
+    if body is None:
         return False
-    if not re.search(r"(?m)^PASS\s*$", body):
-        return False
-    marker = "## Evidence"
-    if marker not in body:
-        return False
-    return bool(body.split(marker, 1)[1].strip())
+    section = _markdown_level_two_section(body, "Evidence")
+    return section is not None and bool(section.strip())
 
 
 def _reject_round_symlinks(paths: RoundPaths, round_number: int) -> None:
@@ -249,18 +271,41 @@ def _reject_round_symlinks(paths: RoundPaths, round_number: int) -> None:
     _reject_symlink(paths.review, "review.md")
 
 
-def _validate_state(
-    paths: RequirementPaths,
-    target: Path,
-    *,
-    require_current_head: bool = False,
-) -> list[str]:
+def _reject_requirement_symlinks(paths: RequirementPaths) -> None:
     _reject_symlink(paths.root, f"requirement directory {paths.root.name}")
     _reject_symlink(paths.state, "state.json")
     _reject_symlink(paths.plan, "plan.md")
     _reject_symlink(paths.rounds, "rounds")
-    state = _load_state(paths.state)
+
+
+def _load_requirement_state(paths: RequirementPaths) -> dict[str, Any]:
+    _reject_requirement_symlinks(paths)
+    return _load_state(paths.state)
+
+
+def _validate_state(
+    paths: RequirementPaths,
+    target: Path,
+    *,
+    state: dict[str, Any] | None = None,
+    require_current_head: bool = False,
+) -> list[str]:
+    _reject_requirement_symlinks(paths)
+    if state is None:
+        state = _load_state(paths.state)
     errors: list[str] = []
+    artifacts: dict[Path, str | None] = {}
+
+    def artifact(path: Path) -> str | None:
+        if path not in artifacts:
+            artifacts[path] = _read_file(path)
+        return artifacts[path]
+
+    def require_artifact(path: Path, message: str) -> str | None:
+        body = artifact(path)
+        if body is None or not body.strip():
+            errors.append(message)
+        return body
 
     if state.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"schema_version must be {SCHEMA_VERSION}")
@@ -296,8 +341,14 @@ def _validate_state(
     revision = state.get("last_good_revision")
     if not isinstance(revision, str):
         errors.append("last_good_revision must be a string")
-    elif revision and not _revision_exists(target, revision):
-        errors.append("last_good_revision does not resolve in the target repository")
+    elif revision:
+        resolved_revision = _resolve_revision(target, revision)
+        if not resolved_revision:
+            errors.append("last_good_revision does not resolve in the target repository")
+        elif revision != resolved_revision or not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision
+        ):
+            errors.append("last_good_revision must be a canonical full commit OID")
 
     current = paths.round(round_number)
     _reject_round_symlinks(current, round_number)
@@ -307,15 +358,37 @@ def _validate_state(
             if status in TERMINAL_STATUSES
             else "BUILDING requires non-empty plan.md"
         )
-        _require_artifact(errors, paths.plan, plan_message)
+        require_artifact(paths.plan, plan_message)
     if phase == "EVALUATING" or status == "ACCEPTED":
-        _require_artifact(
-            errors,
+        require_artifact(
             current.implementation,
             "EVALUATING requires current implementation.md",
         )
     if verdict in {"PASS", "UNVERIFIED"} or status == "ACCEPTED":
-        _require_artifact(errors, current.review, "verdict requires current review.md")
+        require_artifact(current.review, "verdict requires current review.md")
+    if verdict in {"PASS", "UNVERIFIED"}:
+        current_review = artifact(current.review)
+        if _review_verdict(current_review) != verdict:
+            errors.append(
+                "current review Overall verdict must equal latest_verdict " + verdict
+            )
+        if verdict == "PASS" and not _review_has_evidence(current_review):
+            errors.append("PASS review requires evidence")
+
+    if round_number > 1:
+        previous_number = round_number - 1
+        previous = paths.round(previous_number)
+        _reject_round_symlinks(previous, previous_number)
+        previous_review = require_artifact(
+            previous.review,
+            "active_round greater than 1 requires previous review.md",
+        )
+        if _review_verdict(previous_review) != "FAIL":
+            errors.append("previous review Overall verdict must be FAIL")
+        if verdict is None:
+            errors.append(
+                "active_round greater than 1 requires a non-null latest_verdict"
+            )
 
     if verdict == "FAIL":
         if phase != "BUILDING" or round_number < 2:
@@ -323,12 +396,11 @@ def _validate_state(
         previous_number = max(round_number - 1, 1)
         previous = paths.round(previous_number)
         _reject_round_symlinks(previous, previous_number)
-        _require_artifact(
-            errors,
+        require_artifact(
             previous.implementation,
             "FAIL requires previous implementation.md",
         )
-        _require_artifact(errors, previous.review, "FAIL requires previous review.md")
+        require_artifact(previous.review, "FAIL requires previous review.md")
     if verdict == "UNVERIFIED" and phase != "EVALUATING":
         errors.append("UNVERIFIED must remain in EVALUATING")
     if verdict == "PASS" and phase != "EVALUATING":
@@ -338,11 +410,11 @@ def _validate_state(
         state.get("degradation_acceptance")
     ):
         errors.append("DEGRADED requires degradation_acceptance from the user")
+    if require_current_head and status != "ACCEPTED":
+        errors.append("final check requires status ACCEPTED")
     if status == "ACCEPTED":
         if verdict != "PASS":
             errors.append("ACCEPTED requires latest_verdict PASS")
-        elif not _pass_review_has_evidence(current.review):
-            errors.append("PASS review requires evidence")
         if not _non_empty_string(revision):
             errors.append("ACCEPTED requires last_good_revision")
         elif require_current_head and revision != _revision(target):
@@ -368,10 +440,15 @@ def init(
     _reject_legacy_state(control_root)
     if resume:
         paths = _select_requirement(requirements_root, requirement_id)
-        errors = _validate_state(paths, target, require_current_head=False)
+        state = _load_requirement_state(paths)
+        errors = _validate_state(
+            paths,
+            target,
+            state=state,
+            require_current_head=False,
+        )
         if errors:
             raise HarnessError("invalid requirement state: " + "; ".join(errors))
-        state = _load_state(paths.state)
         if goal and goal != state.get("goal"):
             raise HarnessError("resume goal does not match the selected requirement")
         return {
@@ -429,12 +506,13 @@ def check(
     _, requirements_root = _control_paths(target)
     try:
         paths = _select_requirement(requirements_root, requirement_id)
+        state = _load_requirement_state(paths)
         errors = _validate_state(
             paths,
             target,
+            state=state,
             require_current_head=require_current_head,
         )
-        state = _load_state(paths.state)
     except HarnessError as error:
         result = {"valid": False, "errors": [str(error)]}
         return result, False
