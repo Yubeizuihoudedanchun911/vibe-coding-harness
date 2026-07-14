@@ -220,7 +220,7 @@ def _init_lock(control_root: Path) -> Iterator[None]:
 def _load_state(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as error:
+    except (OSError, UnicodeError) as error:
         raise HarnessError(f"cannot read {path}: {error}") from error
     except json.JSONDecodeError as error:
         raise HarnessError(f"invalid JSON in {path}: {error}") from error
@@ -364,6 +364,20 @@ def _markdown_level_two_section(body: str, title: str) -> str | None:
     return body[content_start:content_end]
 
 
+def _markdown_evidence_line_is_substantive(line: str) -> bool:
+    value = line.strip()
+    if re.fullmatch(r"#{1,6}(?:[ \t]+.*)?", value):
+        return False
+    value = re.sub(
+        r"^(?:[-+*]|(?:\d+|[A-Za-z])[.)])(?:[ \t]+|$)",
+        "",
+        value,
+        count=1,
+    )
+    value = re.sub(r"^\[[ xX]\](?:[ \t]+|$)", "", value, count=1)
+    return any(character.isalnum() for character in value)
+
+
 def _markdown_substantive_lines(
     body: str,
     *,
@@ -386,8 +400,12 @@ def _markdown_substantive_lines(
         if fence is not None:
             in_comment = False
             continue
-        if visible.strip():
-            values.append(visible.strip())
+        value = visible.strip()
+        if value and (
+            not include_fenced
+            or _markdown_evidence_line_is_substantive(value)
+        ):
+            values.append(value)
     return values
 
 

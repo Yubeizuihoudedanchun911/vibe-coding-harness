@@ -141,6 +141,22 @@ class HarnessCliTests(unittest.TestCase):
         self.assertEqual(self._load_state("REQ-001")["goal"], "First goal")
         self.assertEqual(self._load_state("REQ-002")["goal"], "Second goal")
 
+    def test_check_reports_invalid_utf8_state_without_traceback(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._state_path().write_bytes(b"\xff")
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        combined_output = result.stdout + result.stderr
+        self.assertNotIn("Traceback", combined_output, combined_output)
+        self.assertEqual(result.stderr, "")
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["valid"])
+        self.assertEqual(len(payload["errors"]), 1)
+        self.assertIn("cannot read", payload["errors"][0])
+        self.assertIn("state.json", payload["errors"][0])
+
     def test_resume_requires_an_id_when_multiple_requirements_are_nonterminal(
         self,
     ) -> None:
@@ -1001,6 +1017,54 @@ class HarnessCliTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PASS review requires evidence", result.stdout)
+
+    def test_markdown_structure_only_is_not_substantive_evidence(self) -> None:
+        review_prefix = (
+            "# Review\n\n## Overall verdict\n\nPASS\n\n## Evidence\n\n"
+        )
+        self._prepare_accepted_review(review_prefix + "-\n")
+        review_path = self._round_root() / "review.md"
+
+        for evidence in ("-", "### Attempt 1", "** **"):
+            with self.subTest(evidence=evidence):
+                review_path.write_text(
+                    review_prefix + evidence + "\n",
+                    encoding="utf-8",
+                )
+                result = self._run_harness(
+                    "check", "--requirement", "REQ-001", "--final"
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("PASS review requires evidence", result.stdout)
+
+    def test_alphanumeric_evidence_forms_are_substantive(self) -> None:
+        review_prefix = (
+            "# Review\n\n## Overall verdict\n\nPASS\n\n## Evidence\n\n"
+        )
+        self._prepare_accepted_review(review_prefix + "- pytest: 66 passed\n")
+        review_path = self._round_root() / "review.md"
+
+        for evidence in (
+            "- pytest: 66 passed",
+            "$ pytest -q",
+            "/tmp/results.xml",
+            "测试通过",
+        ):
+            with self.subTest(evidence=evidence):
+                review_path.write_text(
+                    review_prefix + evidence + "\n",
+                    encoding="utf-8",
+                )
+                result = self._run_harness(
+                    "check", "--requirement", "REQ-001", "--final"
+                )
+
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    result.stdout + result.stderr,
+                )
 
     def test_fenced_command_output_is_substantive_evidence(self) -> None:
         self._prepare_accepted_review(
