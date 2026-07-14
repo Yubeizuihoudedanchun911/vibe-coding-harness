@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -45,6 +46,13 @@ class RequirementPaths:
             implementation=root / "implementation.md",
             review=root / "review.md",
         )
+
+
+@dataclass(frozen=True)
+class ArtifactSnapshot:
+    exists: bool
+    body: str | None
+    error: str | None
 
 
 class HarnessError(ValueError):
@@ -225,11 +233,41 @@ def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _read_file(path: Path) -> str | None:
+def _read_artifact(path: Path) -> ArtifactSnapshot:
     try:
-        return path.read_text(encoding="utf-8") if path.is_file() else None
-    except (OSError, UnicodeError):
-        return None
+        metadata = path.stat()
+    except FileNotFoundError:
+        return ArtifactSnapshot(exists=False, body=None, error=None)
+    except OSError as error:
+        return ArtifactSnapshot(
+            exists=True,
+            body=None,
+            error=f"cannot be inspected: {error}",
+        )
+    if not stat.S_ISREG(metadata.st_mode):
+        return ArtifactSnapshot(
+            exists=True,
+            body=None,
+            error="is not a regular file",
+        )
+    try:
+        return ArtifactSnapshot(
+            exists=True,
+            body=path.read_text(encoding="utf-8"),
+            error=None,
+        )
+    except UnicodeError:
+        return ArtifactSnapshot(
+            exists=True,
+            body=None,
+            error="is not valid UTF-8",
+        )
+    except OSError as error:
+        return ArtifactSnapshot(
+            exists=True,
+            body=None,
+            error=f"cannot be read: {error}",
+        )
 
 
 def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
@@ -273,8 +311,10 @@ def _fence_closes(line: str, fence: tuple[str, int]) -> bool:
     )
 
 
-def _markdown_level_two_headings(body: str) -> list[tuple[str, int, int]]:
-    headings: list[tuple[str, int, int]] = []
+def _markdown_level_two_headings(
+    body: str,
+) -> list[tuple[str | None, int, int]]:
+    headings: list[tuple[str | None, int, int]] = []
     offset = 0
     in_comment = False
     fence: tuple[str, int] | None = None
@@ -287,13 +327,24 @@ def _markdown_level_two_headings(body: str) -> list[tuple[str, int, int]]:
             continue
         visible, in_comment = _strip_html_comments(line, in_comment)
         fence = _fence_start(visible)
+        if fence is not None:
+            in_comment = False
         if fence is None:
-            match = re.fullmatch(
+            boundary = re.fullmatch(
                 r" {0,3}##[ \t]+([^\r\n]*?)[ \t]*", visible
             )
-            if match is not None:
+            if boundary is not None:
+                machine_heading = re.fullmatch(
+                    r" {0,3}## (Overall verdict|Evidence)[ \t]*", line
+                )
                 headings.append(
-                    (match.group(1), offset, offset + len(raw_line))
+                    (
+                        machine_heading.group(1)
+                        if machine_heading is not None
+                        else None,
+                        offset,
+                        offset + len(raw_line),
+                    )
                 )
         offset += len(raw_line)
     return headings
@@ -313,7 +364,11 @@ def _markdown_level_two_section(body: str, title: str) -> str | None:
     return body[content_start:content_end]
 
 
-def _markdown_substantive_lines(body: str) -> list[str]:
+def _markdown_substantive_lines(
+    body: str,
+    *,
+    include_fenced: bool,
+) -> list[str]:
     values: list[str] = []
     in_comment = False
     fence: tuple[str, int] | None = None
@@ -322,11 +377,9 @@ def _markdown_substantive_lines(body: str) -> list[str]:
         if fence is not None:
             if _fence_closes(line, fence):
                 fence = None
-                in_comment = False
                 continue
-            visible, in_comment = _strip_html_comments(line, in_comment)
-            if visible.strip():
-                values.append(visible.strip())
+            if include_fenced and line.strip():
+                values.append(line.strip())
             continue
         visible, in_comment = _strip_html_comments(line, in_comment)
         fence = _fence_start(visible)
@@ -344,7 +397,7 @@ def _review_verdict(body: str | None) -> str | None:
     section = _markdown_level_two_section(body, "Overall verdict")
     if section is None:
         return None
-    values = _markdown_substantive_lines(section)
+    values = _markdown_substantive_lines(section, include_fenced=False)
     return values[0] if len(values) == 1 else None
 
 
@@ -352,7 +405,9 @@ def _review_has_evidence(body: str | None) -> bool:
     if body is None:
         return False
     section = _markdown_level_two_section(body, "Evidence")
-    return section is not None and bool(_markdown_substantive_lines(section))
+    return section is not None and bool(
+        _markdown_substantive_lines(section, include_fenced=True)
+    )
 
 
 def _reject_round_symlinks(paths: RoundPaths, round_number: int) -> None:
@@ -384,18 +439,20 @@ def _validate_state(
     if state is None:
         state = _load_state(paths.state)
     errors: list[str] = []
-    artifacts: dict[Path, str | None] = {}
+    artifacts: dict[Path, ArtifactSnapshot] = {}
 
-    def artifact(path: Path) -> str | None:
+    def artifact(path: Path) -> ArtifactSnapshot:
         if path not in artifacts:
-            artifacts[path] = _read_file(path)
+            artifacts[path] = _read_artifact(path)
         return artifacts[path]
 
     def require_artifact(path: Path, message: str) -> str | None:
-        body = artifact(path)
-        if body is None or not body.strip():
+        snapshot = artifact(path)
+        if snapshot.error is not None:
+            errors.append(f"{message}: {path} {snapshot.error}")
+        elif snapshot.body is None or not snapshot.body.strip():
             errors.append(message)
-        return body
+        return snapshot.body
 
     if state.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"schema_version must be {SCHEMA_VERSION}")
@@ -457,7 +514,7 @@ def _validate_state(
     if verdict in {"PASS", "UNVERIFIED"} or status == "ACCEPTED":
         require_artifact(current.review, "verdict requires current review.md")
     if verdict in {"PASS", "UNVERIFIED"}:
-        current_review = artifact(current.review)
+        current_review = artifact(current.review).body
         if _review_verdict(current_review) != verdict:
             errors.append(
                 "current review Overall verdict must equal latest_verdict " + verdict
@@ -466,9 +523,12 @@ def _validate_state(
             errors.append("PASS review requires evidence")
 
     if phase == "EVALUATING" and verdict is None:
-        if artifact(current.review) is not None:
+        current_review = artifact(current.review)
+        if current_review.exists:
+            detail = current_review.error or "already exists"
             errors.append(
-                "EVALUATING with null latest_verdict requires current review.md to be absent"
+                "EVALUATING with null latest_verdict requires current review.md "
+                f"to be absent; found path that {detail}"
             )
     if phase == "BUILDING" and round_number > 1 and verdict != "FAIL":
         errors.append("BUILDING after round 1 requires latest_verdict FAIL")

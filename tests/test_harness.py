@@ -345,6 +345,64 @@ class HarnessCliTests(unittest.TestCase):
             result.stdout,
         )
 
+    def test_evaluating_null_rejects_a_review_directory(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        (self._round_root() / "review.md").mkdir()
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "EVALUATING",
+                "latest_verdict": None,
+                "next_action": "Dispatch Evaluator.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "EVALUATING with null latest_verdict requires current review.md "
+            "to be absent; found path that is not a regular file",
+            result.stdout,
+        )
+
+    def test_evaluating_null_rejects_an_invalid_utf8_review(self) -> None:
+        self.assertEqual(self._init().returncode, 0)
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/plan.md", "# Plan\n"
+        )
+        self._write_artifact(
+            ".vibe-coding/requirements/REQ-001/rounds/001/implementation.md",
+            "# Implementation\n",
+        )
+        (self._round_root() / "review.md").write_bytes(b"\xff")
+        state = self._load_state()
+        state.update(
+            {
+                "phase": "EVALUATING",
+                "latest_verdict": None,
+                "next_action": "Dispatch Evaluator.",
+            }
+        )
+        self._write_state("REQ-001", state)
+
+        result = self._run_harness("check", "--requirement", "REQ-001")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "EVALUATING with null latest_verdict requires current review.md "
+            "to be absent; found path that is not valid UTF-8",
+            result.stdout,
+        )
+
     def test_next_round_rejects_a_previous_pass_review(self) -> None:
         self.assertEqual(self._init().returncode, 0)
         self._write_artifact(
@@ -948,6 +1006,63 @@ class HarnessCliTests(unittest.TestCase):
         self._prepare_accepted_review(
             "# Review\n\n## Overall verdict\n\nPASS\n\n"
             "## Evidence\n\n```text\n$ pytest -q\n1 passed\n```\n"
+        )
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_evidence_heading_with_a_comment_is_not_a_machine_section(self) -> None:
+        self._prepare_accepted_review(
+            "# Review\n\n## Overall verdict\n\nPASS\n\n"
+            "## Evidence <!--\nhidden placeholder\n-->\n"
+        )
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASS review requires evidence", result.stdout)
+
+    def test_overall_heading_with_a_comment_cannot_supply_pass(self) -> None:
+        self._prepare_accepted_review(
+            "# Review\n\n## Evidence\n\nVerified.\n\n"
+            "## Overall verdict <!--\nPASS\n"
+        )
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "current review Overall verdict must equal latest_verdict PASS",
+            result.stdout,
+        )
+
+    def test_fenced_pass_is_not_an_overall_verdict(self) -> None:
+        self._prepare_accepted_review(
+            "# Review\n\n## Overall verdict\n\n```text\nPASS\n```\n\n"
+            "## Evidence\n\nVerified.\n"
+        )
+
+        result = self._run_harness(
+            "check", "--requirement", "REQ-001", "--final"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "current review Overall verdict must equal latest_verdict PASS",
+            result.stdout,
+        )
+
+    def test_html_comment_literal_inside_evidence_fence_is_substantive(self) -> None:
+        self._prepare_accepted_review(
+            "# Review\n\n## Overall verdict\n\nPASS\n\n"
+            "## Evidence\n\n```text\n<!-- literal output -->\n```\n"
         )
 
         result = self._run_harness(
