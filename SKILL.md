@@ -68,20 +68,31 @@ Root writes the handoff to `rounds/NNN/implementation.md`, changes `phase` to `E
 
 Use `spawn_agent` once to create an independent read-only Evaluator. Provide `state.json`, `plan.md`, the current `implementation.md`, evaluated revision or diff, canonical commands, and raw evidence. Require criterion-level `PASS`, `FAIL`, or `UNVERIFIED`, reproduction details, and residual risks. Evaluator never edits or relaxes criteria.
 
-Require the exact single-line heading `## Overall verdict`. Its next non-empty line must be the review's only plain-text verdict: `PASS`, `FAIL`, or `UNVERIFIED`. A `PASS` review must include the exact `## Evidence` section with substantive evidence. Do not decorate these machine-readable headings.
+Require the exact single-line heading `## Overall verdict`. Its next non-empty line must be the review's only plain-text verdict: `PASS`, `FAIL`, or `UNVERIFIED`. A `PASS` review must include the exact `## Evidence` section with substantive evidence. Keep exactly one `## Overall verdict` machine section in `review.md` and, when applicable, at most one `## Evidence` machine section. Archive each raw or detailed evaluation under one `## Attempts` section using `### Attempt N` headings; after each attempt, update the single verdict and evidence sections instead of appending machine headings. Do not decorate these machine-readable headings.
 
 Root writes `rounds/NNN/review.md`. Reuse the requirement's Evaluator with `followup_task` for later QA rounds or missing evidence. Persistent files remain authoritative over role-chat history.
 
 ## Loop and recovery
 
-- `PASS`: Root checks Goal alignment and evidence, sets `ACCEPTED`, then runs `check --final`.
+- `PASS`: after Evaluator returns, Root writes the current `review.md`, sets `latest_verdict=PASS`, sets `last_good_revision` to the canonical full commit OID actually verified by Evaluator, requires that OID must equal current `HEAD`, keeps `phase=EVALUATING`, confirms Goal and evidence, sets `status=ACCEPTED`, then runs `check --final`.
 - `FAIL`: Root increments `active_round`, sets `phase=BUILDING` and `latest_verdict=FAIL`, and sends the review to Generator.
-- `UNVERIFIED`: keep the round and `phase=EVALUATING`; append the next evaluation attempt to the same review file.
-- Agent interruption: keep phase and round; redispatch the same role. Create a replacement only if that role is unusable.
+- `UNVERIFIED`: Root sets `latest_verdict=UNVERIFIED`, keeps the same `active_round`, keeps `phase=EVALUATING`, archives the attempt, updates the single machine view, then uses `followup_task` with the requirement's Evaluator.
 - External impediment: record `BLOCKED`, reason, and actionable `next_action`.
 - `DEGRADED`: require non-empty `degradation_acceptance` from the user.
 
 Never infer completion from file existence. `ACCEPTED` requires the current round's evidenced PASS and the evaluated current Git revision.
+
+## Cross-session recovery
+
+Use `list_agents` on the current Root agent tree. Reuse a role only when its handle is in that tree and `followup_task` can address it. A handle absent from the tree, unaddressable, or rejected by an explicit `followup_task` failure is unusable. Do not persist role handles.
+
+For an unusable role, keep the round and select by `state.phase`:
+
+- `PLANNING`: spawn a replacement Planner only if `plan.md` is absent; otherwise advance from the persisted plan.
+- `BUILDING`: spawn a replacement Generator.
+- `EVALUATING`: spawn a replacement Evaluator.
+
+Replay every artifact that exists: `state.json`, `plan.md`, the current round artifact, the previous `review.md` for repairs, Git status and revision, and repository instructions; then use `wait_agent`. Recovery replacement is an interruption exception, not normal-round role recreation or a Planner rerun.
 
 ## File maintenance
 

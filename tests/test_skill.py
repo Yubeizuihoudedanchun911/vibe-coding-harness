@@ -58,6 +58,84 @@ class SkillStructureTests(unittest.TestCase):
         self.assertIn("exact `## Evidence` section with substantive evidence", self.skill)
         self.assertIn("Do not decorate these machine-readable headings", self.skill)
 
+    def test_pass_records_the_verified_head_before_acceptance(self) -> None:
+        step = next(
+            line for line in self.skill.splitlines() if line.startswith("- `PASS`:")
+        )
+        fragments = (
+            "Evaluator returns",
+            "writes the current `review.md`",
+            "sets `latest_verdict=PASS`",
+            "`last_good_revision` to the canonical full commit OID",
+            "must equal current `HEAD`",
+            "keeps `phase=EVALUATING`",
+            "confirms Goal and evidence",
+            "sets `status=ACCEPTED`",
+            "runs `check --final`",
+        )
+        for fragment in fragments:
+            self.assertIn(fragment, step)
+        positions = [step.index(fragment) for fragment in fragments]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_unverified_preserves_round_and_updates_one_machine_view(self) -> None:
+        step = next(
+            line for line in self.skill.splitlines() if line.startswith("- `UNVERIFIED`:")
+        )
+        self.assertIn("sets `latest_verdict=UNVERIFIED`", step)
+        self.assertIn("keeps the same `active_round`", step)
+        self.assertIn("keeps `phase=EVALUATING`", step)
+        self.assertIn("`followup_task`", step)
+        self.assertIn(
+            "Keep exactly one `## Overall verdict` machine section", self.skill
+        )
+        self.assertIn(
+            "at most one `## Evidence` machine section", self.skill
+        )
+        self.assertIn("one `## Attempts` section", self.skill)
+        self.assertIn("`### Attempt N`", self.skill)
+        self.assertIn(
+            "update the single verdict and evidence sections", self.skill
+        )
+        self.assertNotIn(
+            "append the next evaluation attempt to the same review file", self.skill
+        )
+
+    def test_resume_reuses_only_addressable_handles_in_the_current_tree(self) -> None:
+        self.assertIn(
+            "Use `list_agents` on the current Root agent tree", self.skill
+        )
+        self.assertIn(
+            "handle is in that tree and `followup_task` can address it", self.skill
+        )
+        self.assertIn(
+            "absent from the tree, unaddressable, or rejected by an explicit "
+            "`followup_task` failure is unusable",
+            self.skill,
+        )
+        self.assertNotIn("agent_id", self.skill)
+
+    def test_resume_replaces_the_role_for_the_current_phase(self) -> None:
+        self.assertIn(
+            "`PLANNING`: spawn a replacement Planner only if `plan.md` is absent",
+            self.skill,
+        )
+        self.assertIn("`BUILDING`: spawn a replacement Generator", self.skill)
+        self.assertIn("`EVALUATING`: spawn a replacement Evaluator", self.skill)
+        self.assertIn(
+            "Replay every artifact that exists: `state.json`, `plan.md`, the current "
+            "round artifact, the previous `review.md` for repairs, Git status and "
+            "revision, and repository instructions",
+            self.skill,
+        )
+        self.assertIn("then use `wait_agent`", self.skill)
+        self.assertIn(
+            "Recovery replacement is an interruption exception", self.skill
+        )
+        self.assertIn(
+            "not normal-round role recreation or a Planner rerun", self.skill
+        )
+
     def test_bundle_keeps_one_runtime_script_and_no_fixed_role_configs(self) -> None:
         scripts = sorted(path.name for path in (ROOT / "scripts").glob("*.py"))
         bundled_content = [
