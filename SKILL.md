@@ -1,105 +1,88 @@
 ---
 name: vibe-coding-harness
-description: Build and evolve maintainable software from a natural-language idea or change request through planning, implementation, independent evaluation, repository governance, and evidence-backed acceptance. Use for vibe coding, greenfield product creation, MVP delivery, end-to-end feature work, long-running autonomous coding, inheriting or regularizing an existing repository, installing coding rules, or continuing a multi-session development effort that must remain structured and verifiable.
+description: Use when a software goal spans sessions and needs role-separated planning, implementation, independent evaluation, and durable recovery evidence.
 ---
 
 # Vibe Coding Harness
 
-Turn a user's product intent into an accepted delivery while keeping the internal planning, agent roles, coding rules, documentation lifecycle, and recovery state out of the user's way.
+Run long software goals through requirement-scoped artifacts and three isolated role agents.
 
-## Operating contract
+## Contract
 
-- Treat the root agent as the lifecycle orchestrator.
-- Ask the user only for unresolved product choices, credentials or permissions, and irreversible external actions.
-- Keep Planner and Evaluator read-only. Keep Generator as the only business-code writer.
-- Use agent messages for control and repository artifacts for durable handoff.
-- Preserve unrelated user changes and use scoped writes and staging.
-- Never report completion while a hard acceptance gate is failing or unverified.
-- Mark an incomplete run `BLOCKED` or `DEGRADED`; require explicit user acceptance before treating degradation as delivery.
+- Treat Git, live behavior, and applicable `AGENTS.md` files as truth.
+- Root only orchestrates agents, persists harness artifacts, validates the Goal Gate, and reports status. Root never writes business code.
+- Planner and Evaluator are read-only. Generator is the only business-code writer.
+- After every role dispatch, Root uses `wait_agent` until it completes; roles run strictly serially. Preserve unrelated user changes and use scoped commits.
+- If multi-agent tools are unavailable, record `BLOCKED`; do not fall back to Root implementation.
 
-## Start or resume a run
+## Start or resume
 
-1. Read applicable `AGENTS.md` files and inspect repository status before changing files.
-2. Resolve this Skill directory as `SKILL_ROOT` and the target project as `TARGET_ROOT`. Reuse its Git root when present. For a greenfield target that belongs to this request, initialize Git before implementation; never nest a repository inside another repository.
-3. Run `scripts/detect_project_profile.py --target TARGET_ROOT` without writes.
-4. Read [rule-selection.md](references/rule-selection.md), then read [rules-core.md](references/rules-core.md) plus every language rule selected by the profile. Do not load unrelated language rules.
-5. Read [repository-contract.md](references/repository-contract.md) and [lifecycle.md](references/lifecycle.md).
-6. If the infrastructure is missing or stale, run `scripts/bootstrap_harness.py` with the target, project name, project goal, and iteration topic. Review its summary and conflicts before continuing.
-7. Run `scripts/validate_harness.py --target TARGET_ROOT`. Repair structural errors before business implementation.
-8. Resume the open iteration when it matches the request. Otherwise create a new iteration; never mix unrelated goals in one iteration.
+Resolve this directory as `SKILL_ROOT` and the target Git root as `TARGET_ROOT`.
 
-## Select execution depth internally
+Start a requirement only when the goal needs durable multi-session work:
 
-Do not make the user choose a harness mode unless cost or latency materially changes their decision.
+```bash
+python "$SKILL_ROOT/scripts/harness.py" init \
+  --target "$TARGET_ROOT" --goal "<user-visible goal>"
+```
 
-| Policy | Use when | Required loop |
-|---|---|---|
-| Fast | Small, reversible, low-risk change with deterministic checks | Orchestrator plan, Generator, fresh final Evaluator |
-| Standard | Normal feature or product slice | Planner, contract, Generator, Evaluator per slice |
-| Strict | Auth, payments, migrations, permissions, destructive data work, or hard-to-reverse architecture | Planner/Evaluator contract review, bounded slices, fresh Evaluator each round, explicit release gate |
+Resume the only nonterminal requirement, or select one explicitly:
 
-Escalate depth when ambiguity, blast radius, external dependencies, or failed verification increases. De-escalate only when evidence shows the extra scaffold is not load-bearing.
+```bash
+python "$SKILL_ROOT/scripts/harness.py" init --resume --target "$TARGET_ROOT"
+python "$SKILL_ROOT/scripts/harness.py" init --resume \
+  --target "$TARGET_ROOT" --requirement REQ-NNN
+python "$SKILL_ROOT/scripts/harness.py" check \
+  --target "$TARGET_ROOT" --requirement REQ-NNN
+```
 
-## Execute the lifecycle
+Read the selected `state.json`, `plan.md`, current round artifacts, Git status, and `last_good_revision`. Trust files over prior chat.
 
-Follow the state machine in [lifecycle.md](references/lifecycle.md):
+## Durable layout
 
-`INTAKE -> BOOTSTRAP -> DISCOVER -> PLAN -> CONTRACT -> IMPLEMENT -> VERIFY -> GOVERN -> RELEASE_GATE -> ACCEPTED`
+Each goal owns:
 
-On verification failure, enter `REPAIR` and return a bounded defect report to Generator. After the same defect fails twice, require root-cause analysis or replanning. After three failed rounds, stop the loop and report a blocker instead of repeating the same approach.
+```text
+.vibe-coding/requirements/REQ-NNN/
+├── state.json
+├── plan.md
+└── rounds/NNN/implementation.md
+             review.md
+```
 
-### Intake and discovery
+Create Markdown files only after their role returns meaningful content. Root writes role output verbatim enough to preserve scope, commands, evidence, risks, and next action.
 
-- Derive the user-visible outcome, non-goals, core journey, constraints, and proof of success.
-- Inspect live code, manifests, commands, tests, and runtime behavior. Prefer repository truth over old documentation.
-- Detect existing conventions and extend them unless they conflict with a hard invariant.
+## Planner: once per requirement
 
-### Plan and contract
+Planner runs once per requirement. Use `spawn_agent` to create a distinct read-only Planner with the user Goal, requirement path, repository instructions, and live code context. Require a self-contained plan containing scope, non-goals, user-visible behavior, high-level design, and testable acceptance criteria. Do not request granular speculative implementation.
 
-- Split work into user-visible vertical slices, not infrastructure-only layers.
-- Define observable behavior, error behavior, data effects, and verification for every slice.
-- Put the brief, plan, and contracts directly in the current iteration paths defined by [repository-contract.md](references/repository-contract.md).
-- Keep the core journey free of placeholders, fake persistence, display-only controls, and unimplemented stubs.
+After Planner returns, Root writes `plan.md`, updates `phase` to `BUILDING`, and sets `next_action` to dispatch Generator. Re-run Planner only when the Goal changes or evidence shows the product specification itself is invalid.
 
-### Implement
+## Generator: Build rounds
 
-- Give Generator one accepted contract and its relevant files at a time.
-- Require focused tests and a concise handoff containing changed paths, commands run, results, known risks, and the next verification target.
-- Do not let parallel agents edit overlapping code. Use separate worktrees for genuinely independent write lanes.
+Use `spawn_agent` once to create the requirement's workspace-write Generator. Give it `state.json`, `plan.md`, applicable repository instructions, and for repairs the previous `review.md`. Require the minimum repository-native implementation, focused tests, relevant real-path checks, a scoped revision when allowed, and a structured handoff.
 
-### Verify and repair
+Root writes the handoff to `rounds/NNN/implementation.md`, changes `phase` to `EVALUATING`, sets `latest_verdict=null`, confirms the current `review.md` does not exist yet, and dispatches Evaluator. Reuse the requirement's Generator with `followup_task` after a failed review; do not create another Planner for normal repair.
 
-- Start Evaluator with fresh task-local context: goal, contract, diff, run commands, and raw artifacts only.
-- Require deterministic checks first, then real UI/API/database interaction, then qualitative judgment when needed.
-- Persist each round as `evaluations/round-NNN.md`; never overwrite earlier evidence.
-- Read [acceptance-gates.md](references/acceptance-gates.md) before issuing a verdict.
+## Evaluator: QA rounds
 
-### Govern and deliver
+Use `spawn_agent` once to create an independent read-only Evaluator. Provide `state.json`, `plan.md`, the current `implementation.md`, evaluated revision or diff, canonical commands, and raw evidence. Require criterion-level `PASS`, `FAIL`, or `UNVERIFIED`, reproduction details, and residual risks. Evaluator never edits or relaxes criteria.
 
-- Update the iteration manifest, architecture, onboarding, decisions, and changelog only when their underlying facts changed.
-- Create ADRs only for durable decisions with documented rationale and consequences.
-- Run the full release gate and `scripts/validate_harness.py` again.
-- Write `delivery-report.md` with scope, gate results, evidence, residual risks, and one of `ACCEPTED`, `BLOCKED`, or `DEGRADED`.
-- Report the outcome to the user in product language; expose internal details only when they explain a decision, risk, or failure.
+Require the exact single-line heading `## Overall verdict`. Its next non-empty line must be the review's only plain-text verdict: `PASS`, `FAIL`, or `UNVERIFIED`. A `PASS` review must include the exact `## Evidence` section with substantive evidence. Do not decorate these machine-readable headings.
 
-## Dynamic Coding Rule routing
+Root writes `rounds/NNN/review.md`. Reuse the requirement's Evaluator with `followup_task` for later QA rounds or missing evidence. Persistent files remain authoritative over role-chat history.
 
-- Always apply `.coding-rules/core.md`.
-- Read `.vibe-coding/project-profile.json` before editing source.
-- Apply every rule listed for the touched path or language; primary language does not suppress secondary languages.
-- Re-run detection when manifests, lockfiles, module roots, or previously unmapped source types change.
-- Preserve user-authored rule content outside managed blocks. Never silently replace an unmanaged file.
+## Loop and recovery
 
-Language references:
+- `PASS`: Root checks Goal alignment and evidence, sets `ACCEPTED`, then runs `check --final`.
+- `FAIL`: Root increments `active_round`, sets `phase=BUILDING` and `latest_verdict=FAIL`, and sends the review to Generator.
+- `UNVERIFIED`: keep the round and `phase=EVALUATING`; append the next evaluation attempt to the same review file.
+- Agent interruption: keep phase and round; redispatch the same role. Create a replacement only if that role is unusable.
+- External impediment: record `BLOCKED`, reason, and actionable `next_action`.
+- `DEGRADED`: require non-empty `degradation_acceptance` from the user.
 
-- JavaScript/TypeScript: [rules-javascript-typescript.md](references/rules-javascript-typescript.md)
-- Python: [rules-python.md](references/rules-python.md)
-- Go: [rules-go.md](references/rules-go.md)
-- Java: [rules-java.md](references/rules-java.md)
-- Rust: [rules-rust.md](references/rules-rust.md)
+Never infer completion from file existence. `ACCEPTED` requires the current round's evidenced PASS and the evaluated current Git revision.
 
-## Infrastructure scripts
+## File maintenance
 
-- `scripts/detect_project_profile.py`: detect languages, module roots, framework evidence, and standard commands without depending on file counts alone.
-- `scripts/bootstrap_harness.py`: install or refresh managed governance files safely and create an iteration without overwriting user documents.
-- `scripts/validate_harness.py`: validate the project profile, selected rules, iteration manifests, artifact references, and lifecycle status.
+Do not create copied rules, fixed role configs, empty governance files, speculative ADRs, or duplicate progress logs. Update existing project documentation only when implementation facts changed. Keep historical requirement directories and round evidence intact.

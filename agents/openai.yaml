@@ -1,4 +1,4 @@
 interface:
   display_name: "Vibe Coding Harness"
-  short_description: "Build maintainable software from idea to verified delivery"
-  default_prompt: "Use $vibe-coding-harness to turn this product idea into a maintainable, verified implementation."
+  short_description: "Orchestrate durable Planner, Generator, Evaluator loops"
+  default_prompt: "Use $vibe-coding-harness as the Root orchestrator: delegate planning, implementation, and evaluation to isolated role agents, persist requirement-scoped evidence, and enforce the Goal Gate."
