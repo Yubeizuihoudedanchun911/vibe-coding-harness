@@ -232,20 +232,110 @@ def _read_file(path: Path) -> str | None:
         return None
 
 
-def _markdown_level_two_section(body: str, title: str) -> str | None:
-    headings = list(
-        re.finditer(r"(?m)^##[ \t]+([^\r\n]*?)[ \t]*\r?$", body)
+def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    visible: list[str] = []
+    remaining = line
+    while remaining:
+        if in_comment:
+            end = remaining.find("-->")
+            if end < 0:
+                return "".join(visible), True
+            remaining = remaining[end + 3 :]
+            in_comment = False
+            continue
+        start = remaining.find("<!--")
+        if start < 0:
+            visible.append(remaining)
+            break
+        visible.append(remaining[:start])
+        remaining = remaining[start + 4 :]
+        in_comment = True
+    return "".join(visible), in_comment
+
+
+def _fence_start(line: str) -> tuple[str, int] | None:
+    match = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+    if match is None:
+        return None
+    marker, suffix = match.groups()
+    if marker[0] == "`" and "`" in suffix:
+        return None
+    return marker[0], len(marker)
+
+
+def _fence_closes(line: str, fence: tuple[str, int]) -> bool:
+    marker, length = fence
+    return bool(
+        re.fullmatch(
+            rf" {{0,3}}{re.escape(marker)}{{{length},}}[ \t]*",
+            line,
+        )
     )
+
+
+def _markdown_level_two_headings(body: str) -> list[tuple[str, int, int]]:
+    headings: list[tuple[str, int, int]] = []
+    offset = 0
+    in_comment = False
+    fence: tuple[str, int] | None = None
+    for raw_line in body.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        if fence is not None:
+            if _fence_closes(line, fence):
+                fence = None
+            offset += len(raw_line)
+            continue
+        visible, in_comment = _strip_html_comments(line, in_comment)
+        fence = _fence_start(visible)
+        if fence is None:
+            match = re.fullmatch(
+                r" {0,3}##[ \t]+([^\r\n]*?)[ \t]*", visible
+            )
+            if match is not None:
+                headings.append(
+                    (match.group(1), offset, offset + len(raw_line))
+                )
+        offset += len(raw_line)
+    return headings
+
+
+def _markdown_level_two_section(body: str, title: str) -> str | None:
+    headings = _markdown_level_two_headings(body)
     selected = [
-        (index, match)
-        for index, match in enumerate(headings)
-        if match.group(1) == title
+        (index, heading)
+        for index, heading in enumerate(headings)
+        if heading[0] == title
     ]
     if len(selected) != 1:
         return None
-    index, match = selected[0]
-    end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
-    return body[match.end() : end]
+    index, (_, _, content_start) = selected[0]
+    content_end = headings[index + 1][1] if index + 1 < len(headings) else len(body)
+    return body[content_start:content_end]
+
+
+def _markdown_substantive_lines(body: str) -> list[str]:
+    values: list[str] = []
+    in_comment = False
+    fence: tuple[str, int] | None = None
+    for raw_line in body.splitlines():
+        line = raw_line.rstrip("\r\n")
+        if fence is not None:
+            if _fence_closes(line, fence):
+                fence = None
+                in_comment = False
+                continue
+            visible, in_comment = _strip_html_comments(line, in_comment)
+            if visible.strip():
+                values.append(visible.strip())
+            continue
+        visible, in_comment = _strip_html_comments(line, in_comment)
+        fence = _fence_start(visible)
+        if fence is not None:
+            in_comment = False
+            continue
+        if visible.strip():
+            values.append(visible.strip())
+    return values
 
 
 def _review_verdict(body: str | None) -> str | None:
@@ -254,7 +344,7 @@ def _review_verdict(body: str | None) -> str | None:
     section = _markdown_level_two_section(body, "Overall verdict")
     if section is None:
         return None
-    values = [line.strip() for line in section.splitlines() if line.strip()]
+    values = _markdown_substantive_lines(section)
     return values[0] if len(values) == 1 else None
 
 
@@ -262,7 +352,7 @@ def _review_has_evidence(body: str | None) -> bool:
     if body is None:
         return False
     section = _markdown_level_two_section(body, "Evidence")
-    return section is not None and bool(section.strip())
+    return section is not None and bool(_markdown_substantive_lines(section))
 
 
 def _reject_round_symlinks(paths: RoundPaths, round_number: int) -> None:
@@ -375,32 +465,33 @@ def _validate_state(
         if verdict == "PASS" and not _review_has_evidence(current_review):
             errors.append("PASS review requires evidence")
 
-    if round_number > 1:
-        previous_number = round_number - 1
-        previous = paths.round(previous_number)
-        _reject_round_symlinks(previous, previous_number)
-        previous_review = require_artifact(
-            previous.review,
-            "active_round greater than 1 requires previous review.md",
-        )
-        if _review_verdict(previous_review) != "FAIL":
-            errors.append("previous review Overall verdict must be FAIL")
-        if verdict is None:
+    if phase == "EVALUATING" and verdict is None:
+        if artifact(current.review) is not None:
             errors.append(
-                "active_round greater than 1 requires a non-null latest_verdict"
+                "EVALUATING with null latest_verdict requires current review.md to be absent"
+            )
+    if phase == "BUILDING" and round_number > 1 and verdict != "FAIL":
+        errors.append("BUILDING after round 1 requires latest_verdict FAIL")
+
+    for history_number in range(1, round_number):
+        history = paths.round(history_number)
+        _reject_round_symlinks(history, history_number)
+        require_artifact(
+            history.implementation,
+            f"history round {history_number:03d} requires non-empty implementation.md",
+        )
+        history_review = require_artifact(
+            history.review,
+            f"history round {history_number:03d} requires non-empty review.md",
+        )
+        if _review_verdict(history_review) != "FAIL":
+            errors.append(
+                f"history round {history_number:03d} Overall verdict must be FAIL"
             )
 
     if verdict == "FAIL":
         if phase != "BUILDING" or round_number < 2:
             errors.append("FAIL requires the next BUILDING round")
-        previous_number = max(round_number - 1, 1)
-        previous = paths.round(previous_number)
-        _reject_round_symlinks(previous, previous_number)
-        require_artifact(
-            previous.implementation,
-            "FAIL requires previous implementation.md",
-        )
-        require_artifact(previous.review, "FAIL requires previous review.md")
     if verdict == "UNVERIFIED" and phase != "EVALUATING":
         errors.append("UNVERIFIED must remain in EVALUATING")
     if verdict == "PASS" and phase != "EVALUATING":
