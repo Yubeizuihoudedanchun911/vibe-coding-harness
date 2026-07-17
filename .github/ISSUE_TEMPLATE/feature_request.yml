@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a focused improvement to the Skill or harness runtime.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: User-visible outcome
+      description: What should a user or maintainer be able to accomplish?
+      placeholder: Describe the desired outcome without prescribing unnecessary implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What limitation or repeated problem does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and invariants
+      description: Identify compatibility, recovery, role-isolation, or security constraints.
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Examples or evidence
+      description: Provide safe examples, expected artifacts, or acceptance criteria.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: This request preserves role isolation or explains why the contract must change.
+          required: true
