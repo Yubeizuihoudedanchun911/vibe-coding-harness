@@ -1,0 +1,68 @@
+name: Bug report
+description: Report reproducible incorrect behavior in the Skill or harness runtime.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not include secrets or private repository data.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect instead?
+      placeholder: Describe the observed and expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest safe sequence of commands or actions that reproduces the problem.
+      placeholder: |
+        1. Run ...
+        2. Resume ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: Commit SHA or release tag where the problem occurs.
+      placeholder: 40-character commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python version, and Codex surface.
+      placeholder: macOS 15, Python 3.12, Codex Desktop
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant evidence
+      description: Add sanitized state, output, or traceback. Remove secrets and private code.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: I removed credentials, private code, and personal data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
