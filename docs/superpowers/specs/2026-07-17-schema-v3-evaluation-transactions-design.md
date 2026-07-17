@@ -84,14 +84,19 @@ The fingerprint is a SHA-256 digest over a canonical byte stream containing:
 1. `git status --porcelain=v2 -z --untracked-files=all`;
 2. the staged binary diff against `HEAD`;
 3. the unstaged binary diff;
-4. every untracked path, file mode, and content digest;
+4. every non-ignored untracked path, file mode, and content digest;
 5. submodule status exposed by Git.
 
 All commands disable external diff and text-conversion helpers. Paths under `.vibe-coding/` are excluded because recording harness state must not invalidate the evaluated product snapshot.
 
 The command returns only the digest and revision; it does not expose repository file contents.
 
-Any change to tracked, staged, unstaged, or untracked repository content outside `.vibe-coding/` changes the fingerprint. Existing unrelated dirty changes are allowed, but they become part of the evaluated snapshot. If they change after evaluation, the requirement must be evaluated again.
+Any change to tracked, staged, unstaged, or non-ignored untracked repository
+content outside `.vibe-coding/` changes the fingerprint. Git-ignored content is
+not part of the product fingerprint; command evidence records generated-output
+checks separately. Existing unrelated dirty changes are allowed, but they
+become part of the evaluated snapshot. If they change after evaluation, the
+requirement must be evaluated again.
 
 ## Lifecycle commands
 
@@ -137,6 +142,9 @@ python3 scripts/harness.py record-review \
   --review-source /path/to/evaluator-review.md
 ```
 
+The review source is a temporary UTF-8 file outside `TARGET_ROOT`; otherwise
+creating the source would itself change the pending product snapshot.
+
 The command:
 
 1. reads and validates the complete review source;
@@ -145,6 +153,12 @@ The command:
 4. writes `review.md` through a temporary file and atomic rename;
 5. computes the exact review SHA-256;
 6. applies the verdict transition to `state.json`.
+
+The first review requires `latest_verdict=null` and no `review.md`. A later
+evidence attempt may replace `review.md` while the requirement remains on the
+same snapshot with `latest_verdict=PASS` or `UNVERIFIED`. The replacement is a
+complete review, not a partial append, and preserves prior attempt details
+under `## Attempts`.
 
 Verdict transitions:
 
@@ -240,7 +254,8 @@ Human-readable details may follow under one `## Attempts` section. The JSON eval
 
 ## Interrupted-write recovery
 
-`record-review` writes the validated review before updating state. This intentionally leaves one recoverable crash window:
+`record-review` writes the validated review before updating state. This
+intentionally leaves two recoverable crash shapes:
 
 ```text
 phase=EVALUATING
@@ -248,7 +263,16 @@ latest_verdict=null
 review.md exists and is complete
 ```
 
-`init --resume` detects this shape before normal validation. It parses the review, verifies it against `state.evaluation`, computes its hash, and applies the same deterministic transition as `record-review`.
+```text
+phase=EVALUATING
+latest_verdict=PASS or UNVERIFIED
+review.md hash differs from state.evaluation.review_sha256
+```
+
+`init --resume` detects both shapes before normal validation. It parses the
+review, verifies it against `state.evaluation`, computes its hash, and applies
+the same deterministic transition as `record-review`. If the persisted review
+hash already equals the state hash, reconciliation is a no-op.
 
 Because the final review rename is atomic, an incomplete review never appears at `review.md`. A malformed or snapshot-mismatched review is not reconciled; resume reports an actionable error and preserves every artifact.
 
