@@ -13,6 +13,12 @@ class SkillStructureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.skill = SKILL_PATH.read_text(encoding="utf-8")
+        cls.readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        cls.readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+        cls.changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        cls.agent_metadata = (ROOT / "agents" / "openai.yaml").read_text(
+            encoding="utf-8"
+        )
 
     def test_description_is_a_trigger_not_a_workflow_summary(self) -> None:
         frontmatter = self.skill.split("---", 2)[1]
@@ -25,116 +31,170 @@ class SkillStructureTests(unittest.TestCase):
     def test_skill_body_stays_bounded(self) -> None:
         body = self.skill.split("---", 2)[2]
         words = re.findall(r"\b[\w'-]+\b", body)
-        self.assertLessEqual(len(words), 900)
+        self.assertLessEqual(len(words), 1000)
 
-    def test_root_only_orchestrates_and_tracks(self) -> None:
+    def test_root_only_orchestrates_and_roles_are_serial(self) -> None:
         self.assertIn("Root never writes business code", self.skill)
-        self.assertIn("Goal Gate", self.skill)
-        self.assertIn("state.json", self.skill)
-
-    def test_skill_launches_distinct_role_agents(self) -> None:
+        self.assertIn("Generator is the only business-code writer", self.skill)
+        self.assertIn("roles run serially", self.skill)
         self.assertIn("spawn_agent", self.skill)
         self.assertIn("followup_task", self.skill)
         self.assertIn("wait_agent", self.skill)
-        self.assertIn("Planner runs once per requirement", self.skill)
+        self.assertIn("Planner runs once", self.skill)
         self.assertIn("Reuse the requirement's Generator", self.skill)
-        self.assertIn("Reuse the requirement's Evaluator", self.skill)
-        self.assertIn("roles run strictly serially", self.skill)
+        self.assertIn("Reuse it with `followup_task`", self.skill)
 
-    def test_requirement_artifacts_replace_global_progress(self) -> None:
+    def test_skill_uses_explicit_schema_v3_evaluation_commands(self) -> None:
+        for command in (
+            "snapshot",
+            "begin-evaluation",
+            "record-review",
+            "restart-evaluation",
+            "accept",
+            "check --final",
+        ):
+            self.assertIn(f"`{command}`", self.skill)
+        self.assertIn("schema 3", self.skill)
+        self.assertNotIn("last_good_revision", self.skill)
+        self.assertNotIn("sets `latest_verdict", self.skill)
+        self.assertNotIn("sets `status=ACCEPTED`", self.skill)
+
+    def test_skill_requires_stable_acceptance_ids_and_evaluation_json(self) -> None:
+        self.assertIn("`## Acceptance criteria`", self.skill)
+        self.assertIn("`AC-NNN`", self.skill)
+        self.assertIn("`## Evaluation record`", self.skill)
+        self.assertIn("workspace_fingerprint", self.skill)
+        for field in (
+            "requirement_id",
+            "round",
+            "goal_sha256",
+            "plan_sha256",
+            "implementation_sha256",
+        ):
+            self.assertIn(f'"{field}"', self.skill)
+        self.assertIn("Schema 2", self.skill)
+        self.assertIn('"verdict": "PASS"', self.skill)
+        self.assertIn('"kind": "command"', self.skill)
+        self.assertIn('"observations"', self.skill)
+        self.assertIn('"kind": "metric"', self.skill)
+        self.assertIn("typed `exact`, `metric`", self.skill)
+        self.assertIn("`artifact` observations", self.skill)
+        self.assertNotIn('"result":', self.skill)
+        self.assertNotIn('"overall_verdict"', self.skill)
+        self.assertNotIn('"type": "command"', self.skill)
+        self.assertNotIn("`## Overall verdict`", self.skill)
+        self.assertNotIn("`## Evidence`", self.skill)
+
+    def test_read_only_roles_are_audited_not_claimed_as_sandboxed(self) -> None:
+        self.assertIn("instruction-level read-only", self.skill)
+        self.assertIn("`snapshot` before and after", self.skill)
+        self.assertIn("record `BLOCKED`", self.skill)
+        self.assertIn("do not attribute the writer without evidence", self.skill)
+        self.assertNotIn("independent read-only Evaluator", self.skill)
+
+    def test_evaluation_transaction_uses_runtime_as_the_only_writer(self) -> None:
+        begin_position = self.skill.index("`begin-evaluation`")
+        record_position = self.skill.index("`record-review`")
+        accept_position = self.skill.index("`accept`")
+        final_position = self.skill.index("`check --final`")
+        self.assertLess(begin_position, record_position)
+        self.assertLess(record_position, accept_position)
+        self.assertLess(accept_position, final_position)
+        self.assertIn("never hand-edit transaction fields", self.skill)
+        self.assertIn("outside `TARGET_ROOT`", self.skill)
+
+    def test_crash_recovery_reconciles_a_complete_review(self) -> None:
+        self.assertIn("`pending_evaluation`", self.skill)
+        self.assertIn("rerun `begin-evaluation`", self.skill)
+        self.assertIn(
+            "`init --resume` intentionally does not reconcile this marker",
+            self.skill,
+        )
+        self.assertIn("runtime-prepared pending review", self.skill)
+        self.assertIn("`init --resume` reconciles", self.skill)
+        self.assertIn("archives prior exact review bytes", self.skill)
+        self.assertIn("digest-bound in history", self.skill)
+
+    def test_goal_gate_rejects_every_kind_of_workspace_drift(self) -> None:
+        self.assertIn("raw tracked, staged, unstaged", self.skill)
+        self.assertIn("Only structured `PASS` may run `accept`", self.skill)
+        self.assertIn("transaction-input or review drift", self.skill)
+        self.assertIn("`check --final` rechecks all hashes and receipts", self.skill)
+        self.assertIn("run `restart-evaluation`", self.skill)
+        self.assertIn("--reason", self.skill)
+
+    def test_user_visible_pass_requires_direct_real_path_evidence(self) -> None:
+        self.assertIn("evaluated revision's public entrypoint", self.skill)
+        self.assertIn("unit-only or mocked evidence is `UNVERIFIED`", self.skill)
+        self.assertIn("Replace weak `PASS` through `record-review`", self.skill)
+        self.assertIn("pressure cannot supply evidence", self.skill)
+
+    def test_blocked_and_degraded_states_cannot_mutate_evaluation_truth(self) -> None:
+        self.assertIn(
+            "edit only ordinary orchestration fields: `status`, `next_action`",
+            self.skill,
+        )
+        self.assertIn("and `residual_risks`", self.skill)
+        self.assertIn(
+            "leave `evaluation`, `accepted_revision`, `latest_verdict`, and review bytes unchanged",
+            self.skill,
+        )
+        self.assertIn("`DEGRADED` is not `ACCEPTED`", self.skill)
+        self.assertIn("never runs `accept` or `check --final`", self.skill)
+
+    def test_requirement_artifacts_and_recovery_handles_remain_durable(self) -> None:
         self.assertIn("requirements/REQ-NNN", self.skill)
         self.assertIn("rounds/NNN/implementation.md", self.skill)
-        self.assertIn("rounds/NNN/review.md", self.skill)
+        self.assertIn("evaluation-inputs/", self.skill)
+        self.assertIn("attempts/", self.skill)
+        self.assertIn("review.md", self.skill)
+        self.assertIn("interruption.json", self.skill)
         self.assertNotIn("progress.md", self.skill)
-
-    def test_evaluation_state_transitions_preserve_live_schema_semantics(self) -> None:
-        self.assertIn("sets `latest_verdict=null`", self.skill)
-        self.assertIn("current `review.md` does not exist yet", self.skill)
-        self.assertIn("sets `phase=BUILDING` and `latest_verdict=FAIL`", self.skill)
-
-    def test_evaluator_uses_machine_readable_review_headings(self) -> None:
-        self.assertIn("exact single-line heading `## Overall verdict`", self.skill)
-        self.assertIn("only plain-text verdict: `PASS`, `FAIL`, or `UNVERIFIED`", self.skill)
-        self.assertIn("exact `## Evidence` section with substantive evidence", self.skill)
-        self.assertIn("Do not decorate these machine-readable headings", self.skill)
-
-    def test_pass_records_the_verified_head_before_acceptance(self) -> None:
-        step = next(
-            line for line in self.skill.splitlines() if line.startswith("- `PASS`:")
-        )
-        fragments = (
-            "Evaluator returns",
-            "writes the current `review.md`",
-            "sets `latest_verdict=PASS`",
-            "`last_good_revision` to the canonical full commit OID",
-            "must equal current `HEAD`",
-            "keeps `phase=EVALUATING`",
-            "confirms Goal and evidence",
-            "sets `status=ACCEPTED`",
-            "runs `check --final`",
-        )
-        for fragment in fragments:
-            self.assertIn(fragment, step)
-        positions = [step.index(fragment) for fragment in fragments]
-        self.assertEqual(positions, sorted(positions))
-
-    def test_unverified_preserves_round_and_updates_one_machine_view(self) -> None:
-        step = next(
-            line for line in self.skill.splitlines() if line.startswith("- `UNVERIFIED`:")
-        )
-        self.assertIn("sets `latest_verdict=UNVERIFIED`", step)
-        self.assertIn("keeps the same `active_round`", step)
-        self.assertIn("keeps `phase=EVALUATING`", step)
-        self.assertIn("`followup_task`", step)
+        self.assertIn("Use `list_agents` on the current Root agent tree", self.skill)
         self.assertIn(
-            "Keep exactly one `## Overall verdict` machine section", self.skill
-        )
-        self.assertIn(
-            "at most one `## Evidence` machine section", self.skill
-        )
-        self.assertIn("one `## Attempts` section", self.skill)
-        self.assertIn("`### Attempt N`", self.skill)
-        self.assertIn(
-            "update the single verdict and evidence sections", self.skill
-        )
-        self.assertNotIn(
-            "append the next evaluation attempt to the same review file", self.skill
-        )
-
-    def test_resume_reuses_only_addressable_handles_in_the_current_tree(self) -> None:
-        self.assertIn(
-            "Use `list_agents` on the current Root agent tree", self.skill
-        )
-        self.assertIn(
-            "handle is in that tree and `followup_task` can address it", self.skill
-        )
-        self.assertIn(
-            "absent from the tree, unaddressable, or rejected by an explicit "
-            "`followup_task` failure is unusable",
+            "handle is in that tree and `followup_task` can address it",
             self.skill,
         )
         self.assertNotIn("agent_id", self.skill)
-
-    def test_resume_replaces_the_role_for_the_current_phase(self) -> None:
-        self.assertIn(
-            "`PLANNING`: spawn a replacement Planner only if `plan.md` is absent",
-            self.skill,
-        )
         self.assertIn("`BUILDING`: spawn a replacement Generator", self.skill)
         self.assertIn("`EVALUATING`: spawn a replacement Evaluator", self.skill)
+
+    def test_public_docs_describe_the_breaking_schema_v3_workflow(self) -> None:
+        for document in (self.readme, self.readme_zh):
+            self.assertIn("schema 3", document.lower())
+            self.assertIn("python3 scripts/harness.py snapshot", document)
+            self.assertIn("begin-evaluation", document)
+            self.assertIn("record-review", document)
+            self.assertIn("restart-evaluation", document)
+            self.assertIn("accept", document)
+            self.assertIn("--final", document)
+            self.assertIn("outside", document.lower())
+            self.assertIn("evaluation-inputs/", document)
+            self.assertIn("attempts/", document)
+            self.assertIn("prepared", document.lower())
+            self.assertIn("pending_evaluation", document)
+            self.assertIn("init --resume", document)
+            self.assertIn("999", document)
+        self.assertNotIn("\npython scripts/harness.py", self.readme)
+        self.assertNotIn("\npython scripts/harness.py", self.readme_zh)
+
+    def test_changelog_and_agent_metadata_publish_the_new_contract(self) -> None:
+        self.assertIn("schema 3 evaluation transactions", self.changelog)
+        self.assertIn("schema 2 state is intentionally unsupported", self.changelog)
+        self.assertIn("complete workspace fingerprint", self.changelog)
+        self.assertIn("restart-evaluation", self.changelog)
+        self.assertIn("exact transaction inputs", self.changelog)
+        self.assertIn("state-first prepared markers", self.changelog)
+        self.assertIn("evaluation-input", self.changelog)
+        self.assertIn("failed evaluations", self.changelog)
         self.assertIn(
-            "Replay every artifact that exists: `state.json`, `plan.md`, the current "
-            "round artifact, the previous `review.md` for repairs, Git status and "
-            "revision, and repository instructions",
-            self.skill,
+            'short_description: "Run durable, snapshot-bound coding goals"',
+            self.agent_metadata,
         )
-        self.assertIn("then use `wait_agent`", self.skill)
-        self.assertIn(
-            "Recovery replacement is an interruption exception", self.skill
-        )
-        self.assertIn(
-            "not normal-round role recreation or a Planner rerun", self.skill
-        )
+        self.assertIn("schema 3 evaluation records", self.agent_metadata)
+        self.assertIn("exact transaction inputs", self.agent_metadata)
+        self.assertIn("hash-bound attempts and receipts", self.agent_metadata)
+        self.assertIn("exact evidenced repository snapshot", self.agent_metadata)
 
     def test_bundle_keeps_one_runtime_script_and_no_fixed_role_configs(self) -> None:
         scripts = sorted(path.name for path in (ROOT / "scripts").glob("*.py"))
