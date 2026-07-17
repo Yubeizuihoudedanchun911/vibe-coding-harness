@@ -4,7 +4,7 @@
 
 **Goal:** Make evaluation persistence crash-recoverable, bind acceptance to the exact evaluated Git workspace, require structured criterion evidence, and audit read-only role drift.
 
-**Architecture:** `scripts/harness.py` remains the single standard-library runtime. Schema 3 introduces repository snapshots and explicit `snapshot`, `begin-evaluation`, `record-review`, and `accept` commands; `record-review` writes evidence before state and `init --resume` deterministically reconciles that crash window. `SKILL.md` owns role dispatch while the runtime enforces snapshot, review, and final-gate invariants.
+**Architecture:** `scripts/harness.py` remains the single standard-library runtime. Schema 3 introduces repository snapshots and explicit `snapshot`, `begin-evaluation`, `record-review`, `restart-evaluation`, and `accept` commands. Evaluation freezes exact goal/plan/implementation inputs, and begin/review/interruption writes all use state-first prepared markers so their matching commands deterministically reconcile crash windows without trusting orphan files. `SKILL.md` owns role dispatch while the runtime enforces transaction identity, snapshots, historical receipts, restart, and final-gate invariants.
 
 **Tech Stack:** Python 3.10+ standard library, `unittest`, Git CLI, Markdown/JSON, Codex multi-agent tools.
 
@@ -13,7 +13,9 @@
 - Schema 2 compatibility and migration are out of scope; schema 2 state must fail with an explicit error.
 - Keep `scripts/harness.py` as the only runtime script.
 - Exclude `.vibe-coding/` from product workspace fingerprints.
-- Include tracked, staged, unstaged, non-ignored untracked, and submodule status in the fingerprint.
+- Include tracked, staged, unstaged, non-ignored untracked, and recursively fingerprinted initialized submodule content.
+- Hash raw tracked worktree types, modes, and bytes independently of Git filters and index visibility flags.
+- Disable external diff and text-conversion helpers for every fingerprint diff.
 - Do not expose repository file contents in snapshot output.
 - Root never writes business code.
 - Planner and Evaluator are instruction-level read-only roles with before/after snapshot auditing.
@@ -396,7 +398,7 @@ def _review_body(
     second_verdict: str = "PASS",
 ) -> str:
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "revision": snapshot["revision"],
         "workspace_fingerprint": snapshot["workspace_fingerprint"],
         "verdict": verdict,
@@ -418,13 +420,28 @@ def _review_body(
                 "kind": "command",
                 "command": "tool export --format csv",
                 "exit_code": 0,
-                "result": "Created report.csv with the expected rows.",
+                "summary": "The export command created the expected rows.",
+                "observations": [
+                    {
+                        "kind": "metric",
+                        "name": "data_rows",
+                        "value": 42,
+                        "unit": "rows",
+                    }
+                ],
             },
             {
                 "id": "EV-002",
                 "kind": "inspection",
                 "subject": "report.csv",
-                "result": "UTF-8 text parsed and matched the fixture.",
+                "summary": "UTF-8 text matched the fixture.",
+                "observations": [
+                    {
+                        "kind": "exact",
+                        "name": "encoding",
+                        "value": "UTF-8",
+                    }
+                ],
             },
         ],
         "residual_risks": [],
@@ -466,10 +483,10 @@ def test_review_record_must_cover_every_planned_criterion(self) -> None:
 
     self.assertIn("criteria must exactly match plan acceptance IDs", errors)
 
-def test_bare_command_is_not_sufficient_pass_evidence(self) -> None:
+def test_untyped_command_is_not_sufficient_pass_evidence(self) -> None:
     snapshot = self._snapshot()
     record = HARNESS_MODULE._evaluation_record(self._review_body(snapshot))
-    record["evidence"][0].pop("result")
+    record["evidence"][0].pop("observations")
 
     errors = HARNESS_MODULE._validate_evaluation_record(
         record,
@@ -477,7 +494,7 @@ def test_bare_command_is_not_sufficient_pass_evidence(self) -> None:
         HARNESS_MODULE.RepositorySnapshot(**snapshot),
     )
 
-    self.assertIn("command evidence EV-001 requires a non-empty result", errors)
+    self.assertIn("command evidence EV-001 requires typed observations", errors)
 
 def test_overall_verdict_is_derived_from_criterion_verdicts(self) -> None:
     snapshot = self._snapshot()
@@ -502,7 +519,7 @@ Run:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   tests.test_harness.HarnessCliTests.test_acceptance_criteria_require_stable_unique_ids \
   tests.test_harness.HarnessCliTests.test_review_record_must_cover_every_planned_criterion \
-  tests.test_harness.HarnessCliTests.test_bare_command_is_not_sufficient_pass_evidence \
+  tests.test_harness.HarnessCliTests.test_untyped_command_is_not_sufficient_pass_evidence \
   tests.test_harness.HarnessCliTests.test_overall_verdict_is_derived_from_criterion_verdicts -v
 ```
 
@@ -514,7 +531,7 @@ Add:
 
 ```python
 ACCEPTANCE_PATTERN = re.compile(r"^-\s+(AC-\d{3}):\s+\S.*$", re.MULTILINE)
-REVIEW_SCHEMA_VERSION = 1
+REVIEW_SCHEMA_VERSION = 2
 EVIDENCE_KINDS = {"command", "inspection"}
 
 
@@ -564,7 +581,7 @@ def _validate_evaluation_record(
 ) -> list[str]:
     errors: list[str] = []
     if record.get("schema_version") != REVIEW_SCHEMA_VERSION:
-        errors.append("evaluation record schema_version must be 1")
+        errors.append("evaluation record schema_version must be 2")
     if record.get("revision") != expected_snapshot.revision:
         errors.append("evaluation revision must match the pending snapshot")
     if record.get("workspace_fingerprint") != expected_snapshot.workspace_fingerprint:
@@ -611,19 +628,19 @@ def _validate_evaluation_record(
                 errors.append(
                     f"command evidence {identifier} requires an integer exit_code"
                 )
-            if not _non_empty_string(item.get("result")):
-                errors.append(
-                    f"command evidence {identifier} requires a non-empty result"
-                )
+            if not _non_empty_string(item.get("summary")):
+                errors.append(f"command evidence {identifier} requires a summary")
+            if not _valid_typed_observations(item.get("observations")):
+                errors.append(f"command evidence {identifier} requires typed observations")
         else:
             if not _non_empty_string(item.get("subject")):
                 errors.append(
                     f"inspection evidence {identifier} requires a subject"
                 )
-            if not _non_empty_string(item.get("result")):
-                errors.append(
-                    f"inspection evidence {identifier} requires a non-empty result"
-                )
+            if not _non_empty_string(item.get("summary")):
+                errors.append(f"inspection evidence {identifier} requires a summary")
+            if not _valid_typed_observations(item.get("observations")):
+                errors.append(f"inspection evidence {identifier} requires typed observations")
 
     verdicts: list[str] = []
     for identifier in criterion_ids:
@@ -1545,3 +1562,89 @@ git log --oneline --decorate -8
 ```
 
 Expected: only intentional commits exist and no uncommitted implementation files remain.
+
+### Task 7: Post-review contract and recovery hardening
+
+**Files:**
+- Modify: `scripts/harness.py`
+- Modify: `tests/test_harness.py`
+- Modify: `SKILL.md`
+- Modify: `tests/test_skill.py`
+- Modify: public documentation and this design/plan pair
+
+- [ ] **Step 1: Lock the approved review and phase contract**
+
+Add failing tests that require top-level `verdict`, evidence `kind`, exact
+integer schema versions, duplicate-key rejection, and `BUILDING` as the only
+legal `begin-evaluation` phase. Remove the obsolete field names without a
+compatibility path.
+
+- [ ] **Step 2: Close fingerprint helper and submodule gaps**
+
+Add failing fixtures where a configured textconv returns constant output and
+where dirty submodule bytes change without changing the parent gitlink. Also
+cover constant clean filters and `assume-unchanged`. Add `--no-textconv`, hash
+raw tracked worktree bytes, and recursively bind initialized submodule
+snapshots.
+
+- [ ] **Step 3: Add the explicit drift transition**
+
+Add failing tests for drift before review, drift after PASS, restart crash
+recovery, and idempotent retry. Implement `restart-evaluation --reason` so it
+writes `rounds/NNN/interruption.json` before advancing to a fresh `BUILDING`
+round. Historical review bytes remain unchanged; an unreviewed interrupted
+round remains valid through its structured interruption record.
+
+- [ ] **Step 4: Replace free-text evidence inference with schema 2 observations**
+
+Add failing cases for schema 1, missing/empty observations, malformed metrics,
+unknown observation kinds, and artifact hash mismatches. Remove natural-language
+classification. Require schema 2 `exact`, finite `metric`, or SHA-256-bound
+repository-relative `artifact` observations; summaries never satisfy evidence.
+Add positive HTTP/MIME and path-with-spaces cases to prevent semantic false
+positives. Revalidate current-round artifact bytes through acceptance, but
+validate only the persisted path/digest structure after a round becomes
+historical so a later build can replace the same product path. Treat ignored
+artifact hash changes as restart-worthy drift and persist them in schema 2
+`interruption.json`; reject interruption schema 1 without compatibility.
+Reject case-folded or nested Git/control path components and convert oversized
+JSON-number parser failures into normal harness errors without tracebacks.
+Reject Unicode surrogate escapes in persisted free-form strings before any
+review or state file is written, and keep CLI error output valid UTF-8.
+
+- [ ] **Step 5: Re-run release gates and fresh review**
+
+Run the complete unittest suite, `git diff --check`, CLI compilation/help
+checks, guided pressure scenarios, and a new independent Critical/Important
+review. Fix every valid finding before publishing.
+
+- [ ] **Step 6: Close final transaction-integrity findings**
+
+Add failing tests and implementation for the final review findings:
+
+- bind every evaluation and review to `requirement_id`, `round`, exact goal,
+  plan, and implementation hashes in addition to revision and product
+  fingerprint;
+- archive the exact plan and implementation transaction inputs under
+  `evaluation-inputs/` and validate them in current and historical rounds;
+- archive replaced review bytes under `attempts/` and bind each archive through
+  an ordered `review_attempts` receipt;
+- retain full FAIL transaction receipts in `failed_evaluations` and exact
+  interruption-body digests in `interruption_history`;
+- introduce `pending_review` and `pending_interruption` as state-first
+  two-phase markers, reconcile only marker-authorized files, and reject forged
+  orphan lifecycle files;
+- introduce `pending_evaluation` before input-archive writes; a retry either
+  completes the matching begin transaction or state-first reprepares changed
+  inputs, while `init --resume` only reports the marker;
+- include goal, plan, and implementation states in drift observations;
+- allow restart-specific validation to record missing/invalid plan and missing
+  implementation states; preserve the interruption before blocking for plan
+  repair or advancing with archived implementation authority;
+- bound lifecycle rounds to 999 before writes and normalize expected
+  filesystem/Unicode failures to structured CLI errors without tracebacks.
+
+Update `SKILL.md`, both READMEs, changelog, agent metadata, this plan, and the
+design so the published contract matches the final runtime. Then rerun all
+release gates and obtain a fresh independent Critical/Important review of the
+shared tree.
