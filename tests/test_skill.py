@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -89,7 +89,9 @@ class SkillStructureTests(unittest.TestCase):
         )
         generator_contracts = (
             "Loop: choose the smallest unfinished step",
+            "highest-signal",
             "fastest deterministic check",
+            "relevant to the current step",
             "Stop only when every `AC-NNN` has implementation and verification",
             "prevents further safe progress",
             "Finish all independent safe work first",
@@ -108,6 +110,7 @@ class SkillStructureTests(unittest.TestCase):
             "Reference, never create, SHA-256-bound logs",
             "raw evidence",
             "Missing required raw evidence is `UNVERIFIED`",
+            "replace every transaction and evidence placeholder",
         )
         for contract in planner_contracts:
             self.assertIn(contract, planner)
@@ -175,14 +178,56 @@ class SkillStructureTests(unittest.TestCase):
             evaluator,
         )
 
-        revision = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-        ).stdout.strip()
-        record["revision"] = revision
+        criterion_ids = ["AC-001", "AC-002", "AC-003"]
+        snapshot = HARNESS_RUNTIME.snapshot(ROOT)
+        expected_evaluation = {
+            "requirement_id": "REQ-001",
+            "round": 1,
+            "revision": snapshot["revision"],
+            "workspace_fingerprint": snapshot["workspace_fingerprint"],
+            "goal_sha256": "sha256:" + "1" * 64,
+            "plan_sha256": "sha256:" + "2" * 64,
+            "implementation_sha256": "sha256:" + "3" * 64,
+            "acceptance_criteria": criterion_ids,
+        }
+        for key in (
+            "requirement_id",
+            "round",
+            "revision",
+            "workspace_fingerprint",
+            "goal_sha256",
+            "plan_sha256",
+            "implementation_sha256",
+        ):
+            record[key] = expected_evaluation[key]
+
+        record["evidence"][0].update(
+            {
+                "command": "python3 -m unittest tests.test_skill",
+                "exit_code": 0,
+                "summary": "Skill contract tests passed.",
+            }
+        )
+        record["evidence"][0]["observations"][0].update(
+            {"name": "selected_role", "value": "Evaluator"}
+        )
+        record["evidence"][0]["observations"][1].update(
+            {"name": "failed_tests", "value": 0, "unit": "tests"}
+        )
+        record["evidence"][1].update(
+            {
+                "subject": "tests/test_skill.py",
+                "summary": "The executable contract is covered by a focused test.",
+            }
+        )
+        artifact_path = ROOT / "README.md"
+        record["evidence"][1]["observations"][0].update(
+            {
+                "path": "README.md",
+                "sha256": "sha256:"
+                + hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            }
+        )
         body = (
             "# Review\n\n## Evaluation record\n\n```json\n"
             + json.dumps(record, indent=2)
@@ -190,10 +235,9 @@ class SkillStructureTests(unittest.TestCase):
         )
         accepted = HARNESS_RUNTIME._validated_review(
             body,
-            ["AC-001", "AC-002", "AC-003"],
+            criterion_ids,
             ROOT,
-            None,
-            verify_artifacts=False,
+            expected_evaluation,
         )
         self.assertEqual(accepted["verdict"], "FAIL")
 
@@ -211,6 +255,20 @@ class SkillStructureTests(unittest.TestCase):
         self.assertNotIn("last_good_revision", self.skill)
         self.assertNotIn("sets `latest_verdict", self.skill)
         self.assertNotIn("sets `status=ACCEPTED`", self.skill)
+
+    def test_lifecycle_shell_blocks_are_self_contained(self) -> None:
+        blocks = re.findall(r"```bash\n(.*?)\n```", self.skill, flags=re.DOTALL)
+        self.assertEqual(len(blocks), 4)
+        for block in blocks:
+            variable_call = 'python3 "$HARNESS"' in block
+            direct_call = 'python3 "$SKILL_ROOT/scripts/harness.py"' in block
+            self.assertTrue(variable_call or direct_call, block)
+            if variable_call:
+                assignment = 'HARNESS="$SKILL_ROOT/scripts/harness.py"'
+                self.assertIn(assignment, block)
+                self.assertLess(
+                    block.index(assignment), block.index('python3 "$HARNESS"')
+                )
 
     def test_skill_requires_stable_acceptance_ids_and_evaluation_json(self) -> None:
         planner = self._section("Planner: once per requirement")
@@ -308,6 +366,7 @@ class SkillStructureTests(unittest.TestCase):
         self.assertIn("review.md", self.skill)
         self.assertIn("interruption.json", self.skill)
         self.assertNotIn("progress.md", self.skill)
+        self.assertIn("duplicate progress logs", self._section("File maintenance"))
         self.assertIn("Use `list_agents` on the current Root agent tree", self.skill)
         self.assertIn(
             "handle is in that tree and `followup_task` can address it",
