@@ -302,11 +302,13 @@ class SkillStructureTests(unittest.TestCase):
         self.assertNotIn("`## Evidence`", evaluator)
 
     def test_read_only_roles_are_audited_not_claimed_as_sandboxed(self) -> None:
-        self.assertIn("instruction-level read-only", self.skill)
-        self.assertIn("`snapshot` before and after", self.skill)
-        self.assertIn("record `BLOCKED`", self.skill)
-        self.assertIn("do not attribute the writer without evidence", self.skill)
-        self.assertNotIn("independent read-only Evaluator", self.skill)
+        audit = self._section("Snapshot and role audit")
+        self.assertIn("Instruction-level read-only", audit)
+        self.assertIn("Root runs `snapshot` before and after each role", audit)
+        self.assertIn("record `BLOCKED`", audit)
+        self.assertIn("do not attribute the writer without evidence", audit)
+        self.assertNotIn("before and after roles", audit)
+        self.assertNotIn("independent read-only Evaluator", audit)
 
     def test_evaluation_transaction_uses_runtime_as_the_only_writer(self) -> None:
         begin_position = self.skill.index("`begin-evaluation`")

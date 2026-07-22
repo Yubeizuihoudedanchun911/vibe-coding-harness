@@ -51,7 +51,7 @@ Freeze exact inputs in `evaluation-inputs/`; archive replacements in `attempts/`
 
 ## Snapshot and role audit
 
-Instruction-level read-only is not sandboxing. Root runs `snapshot` before and after roles; Evaluator checks are `begin-evaluation` then authoritative `record-review`.
+Instruction-level read-only is not sandboxing. Root runs `snapshot` before and after each role; Evaluator checks are `begin-evaluation` then authoritative `record-review`.
 
 Fingerprint drift: preserve diff, record `BLOCKED`, and do not attribute the writer without evidence. Dirty product files allowed. Snapshot raw tracked, staged, unstaged, non-ignored untracked bytes; exclude `.vibe-coding/` and ignored files.
 
@@ -125,7 +125,7 @@ python3 "$HARNESS" check --final \
   --target "$TARGET_ROOT" --requirement REQ-NNN
 ```
 
-## Cross-session role recovery
+## Cross-session recovery
 
 Use `list_agents` on the current Root agent tree. Reuse only when its handle is in that tree and `followup_task` can address it; never persist handles.
 
