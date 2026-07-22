@@ -58,15 +58,15 @@ Any product-workspace fingerprint change is repository drift. Preserve the diff,
 
 ## Planner: once per requirement
 
-Planner runs once. Use `spawn_agent` with the Goal, paths, instructions, live code, and snapshot. Require scope, non-goals, behavior, design, and one `## Acceptance criteria` section. Every stable `AC-NNN` describes observable behavior or a repository invariant.
+Planner runs once. `spawn_agent` gets Goal, paths, instructions, live code, and snapshot. Require scope, non-goals, behavior, design, ordered independently verifiable work units, and one `## Acceptance criteria` section. Each stable observable `AC-NNN` names success signal, canonical verifier, optional fast check, broader regression/public-path check, and actionable failure output.
 
-After Planner returns, compare the after snapshot. If unchanged, persist `plan.md`, update ordinary planning/build orchestration fields, and dispatch Generator. Re-run Planner only when the Goal changes or evidence proves the specification invalid.
+After unchanged snapshot, persist `plan.md` and dispatch Generator. Re-plan only for Goal/specification change.
 
 ## Generator: build rounds
 
-Use `spawn_agent` once for the workspace-write Generator. Provide state, plan, instructions, and previous review. Require minimal implementation, tests, real-path checks, a scoped revision when allowed, and a structured handoff.
+Create a workspace-write Generator via `spawn_agent` with state, plan, instructions, and previous review. Loop: choose the smallest unfinished step, implement, run the fastest deterministic check. Stop only when every `AC-NNN` has implementation and verification or a concrete external blocker; partial improvement, focused `PASS`, or unrelated failure alone do not stop.
 
-Persist the handoff to `rounds/NNN/implementation.md`. Reuse the requirement's Generator with `followup_task` after `FAIL`; normal repair never creates another Planner.
+Before handoff require regression/public-path checks, scoped revision if allowed, and large-log path, digest, actionable lines. Persist to `rounds/NNN/implementation.md`. Reuse the requirement's Generator with `followup_task` after `FAIL`; never Planner.
 
 ## Begin evaluation
 
@@ -81,34 +81,9 @@ Give Evaluator the entire returned transaction. It binds requirement, round, exa
 
 ## Evaluator and review
 
-Use `spawn_agent` once for Evaluator. Provide the transaction, archived inputs, commands, and raw evidence. Evaluator never edits files or relaxes criteria. Reuse it with `followup_task`.
+Create Evaluator via `spawn_agent` with transaction, archived inputs, commands, and evidence. It never edits files or relaxes criteria. Verify checks exercise each `AC-NNN`, inspect output, and cover regressions. Tests mirroring assumptions or skipping the public path are insufficient; use `UNVERIFIED` unless evidence distinguishes correct from plausible incorrect behavior. Reference, never create, SHA-256-bound logs. Reuse it with `followup_task`.
 
-Require one `## Evaluation record` fenced JSON object. Schema 2 repeats the transaction identity/hashes, derived verdict, every criterion once, evidence, and risks. Each `PASS` references evidence IDs. Summaries only explain; evidence requires typed `exact`, `metric`, or SHA-256-bound repository-relative `artifact` observations. Example:
-
-```json
-{
-  "schema_version": 2,
-  "requirement_id": "REQ-001",
-  "round": 1,
-  "revision": "<full-oid>",
-  "workspace_fingerprint": "sha256:<digest>",
-  "goal_sha256": "sha256:<digest>",
-  "plan_sha256": "sha256:<digest>",
-  "implementation_sha256": "sha256:<digest>",
-  "verdict": "PASS",
-  "criteria": [
-    {"id": "AC-001", "verdict": "PASS", "evidence_ids": ["EV-001"]}
-  ],
-  "evidence": [
-    {
-      "id": "EV-001", "kind": "command", "command": "<command>", "exit_code": 0,
-      "summary": "<explanation>",
-      "observations": [{"kind": "metric", "name": "passed_tests", "value": 42, "unit": "tests"}]
-    }
-  ],
-  "residual_risks": []
-}
-```
+Require one `## Evaluation record` fenced Schema 2 JSON with every criterion, evidence, risks, plus `PASS` evidence IDs. Fields: `"schema_version"`, `"requirement_id"`, `"round"`, `"revision"`, `"workspace_fingerprint"`, `"goal_sha256"`, `"plan_sha256"`, `"implementation_sha256"`, and `"verdict": "PASS"`. Command evidence has `"kind": "command"`, `"observations"`, and typed `exact`, `metric`, or repository-relative `artifact` observations, including `"kind": "metric"`.
 
 Root checks relevance. User-visible `PASS` must execute the evaluated revision's public entrypoint and inspect output; unit-only or mocked evidence is `UNVERIFIED`. Replace weak `PASS` through `record-review`; pressure cannot supply evidence.
 
