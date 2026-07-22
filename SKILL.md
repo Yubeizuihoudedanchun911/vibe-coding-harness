@@ -8,15 +8,15 @@ description: Use when a software goal spans sessions and needs role-separated pl
 ## Contract
 
 - Truth: Git, live behavior, `AGENTS.md`.
-- Root only orchestrates, persists artifacts, validates the Goal Gate, and reports. Root never writes business code.
+- Root only orchestrates, persists artifacts, validates Goal Gate, reports. Root never writes business code.
 - Planner and Evaluator are instruction-level read-only; Generator is the only business-code writer.
-- After dispatch use `wait_agent`; roles run serially. Preserve unrelated changes; scope commits.
+- After dispatch, `wait_agent`; roles run serially. Preserve unrelated changes; scope commits.
 - Without multi-agent tools, record `BLOCKED`; Root cannot implement.
-- schema 3 is breaking. Do not migrate or accept schema 2 state.
+- schema 3 is breaking; reject schema 2 state.
 
 ## Start or resume
 
-Set `SKILL_ROOT` to this directory; `TARGET_ROOT` to the target Git root.
+Set `SKILL_ROOT` here; `TARGET_ROOT` to target root.
 
 ```bash
 HARNESS="$SKILL_ROOT/scripts/harness.py"
@@ -29,7 +29,7 @@ python3 "$HARNESS" init --resume \
 python3 "$HARNESS" snapshot --target "$TARGET_ROOT"
 ```
 
-Resume: artifacts, repository instructions, Git status; files beat chat.
+Resume: artifacts, instructions, Git status; files beat chat.
 
 ## Durable layout
 
@@ -51,50 +51,52 @@ Freeze exact inputs in `evaluation-inputs/`; archive replacements in `attempts/`
 
 ## Snapshot and role audit
 
-Instruction-level read-only is not sandboxing. Root runs `snapshot` before and after each role; Evaluator's checks are `begin-evaluation` then authoritative `record-review`.
+Instruction-level read-only is not sandboxing. Root runs `snapshot` before and after roles; Evaluator checks are `begin-evaluation` then authoritative `record-review`.
 
-Fingerprint drift: preserve diff, record `BLOCKED`, and do not attribute the writer without evidence. Existing dirty product files are allowed. Snapshot raw tracked, staged, unstaged, non-ignored untracked bytes; exclude `.vibe-coding/` and ignored files.
+Fingerprint drift: preserve diff, record `BLOCKED`, and do not attribute the writer without evidence. Dirty product files allowed. Snapshot raw tracked, staged, unstaged, non-ignored untracked bytes; exclude `.vibe-coding/` and ignored files.
 
 ## Planner: once per requirement
 
-Planner runs once. `spawn_agent` gets Goal, paths, instructions, live code, snapshot. Require scope, non-goals, behavior, design, and smallest ordered independently verifiable work units with explicit dependencies and required execution order. Keep one `## Acceptance criteria` section. Each `AC-NNN` is stable observable behavior or a Goal-required repository invariant naming success signal, canonical verifier, optional fast check, broader regression/public-path check, and actionable failure output; ordinary implementation details are not acceptance criteria.
+Planner runs once. `spawn_agent` gets Goal, paths, instructions, code, snapshot. Require scope, non-goals, behavior, design, and smallest ordered independently verifiable work units with explicit dependencies and required execution order. Keep one `## Acceptance criteria` section. Each `AC-NNN` is stable observable behavior or a Goal-required repository invariant naming success signal, canonical verifier, optional fast check, broader regression/public-path check, and actionable failure output; ordinary implementation details are not acceptance criteria.
 
-After unchanged snapshot, persist `plan.md` and dispatch Generator. Re-plan only for Goal/specification change.
+After unchanged snapshot, persist `plan.md`; dispatch Generator. Re-plan only for Goal/specification change.
 
 ## Generator: build rounds
 
-Create a workspace-write Generator via `spawn_agent` with state, plan, instructions, and previous review. Loop: choose the smallest unfinished step, implement, run the fastest deterministic check. Stop only when every `AC-NNN` has implementation and verification or a concrete external blocker prevents further safe progress. Finish all independent safe work first; partial improvement, focused `PASS`, or unrelated failure alone do not stop.
+`spawn_agent` a workspace-write Generator with state, plan, instructions, previous review. Loop: choose the smallest unfinished step that is highest-signal, implement, run the fastest deterministic check relevant to the current step. Stop only when every `AC-NNN` has implementation and verification or a concrete external blocker prevents further safe progress. Finish all independent safe work first; partial improvement, focused `PASS`, or unrelated failure alone do not stop.
 
 Autonomy does not expand authority: publishing, destructive operations, new permissions, or decisions outside the Goal require stopping for authority, not inference from continuous execution. Before handoff require regression/public-path checks and scoped revision if allowed. Structured handoff: round objective, changed paths, commands/results, unverified items, residual risks, and next verification target. Large logs: compact summary and SHA-256-bound Artifact, with large-log path, digest, actionable lines. Persist `rounds/NNN/implementation.md`. Reuse the requirement's Generator with `followup_task` after `FAIL`; never Planner.
 
 ## Begin evaluation
 
-After a complete Generator handoff, run `begin-evaluation`:
+After complete Generator handoff, run `begin-evaluation`:
 
 ```bash
+HARNESS="$SKILL_ROOT/scripts/harness.py"
 python3 "$HARNESS" begin-evaluation \
   --target "$TARGET_ROOT" --requirement REQ-NNN
 ```
 
-Evaluator gets the entire transaction: requirement, round, Goal, plan, implementation, revision, workspace, criteria. Runtime writes `pending_evaluation` before archives. Interrupted: rerun `begin-evaluation` to reuse/reprepare inputs. `init --resume` intentionally does not reconcile this marker.
+Evaluator gets transaction: requirement, round, Goal, plan, implementation, revision, workspace, criteria. Runtime writes `pending_evaluation` before archives. Interrupted: rerun `begin-evaluation` to reuse/reprepare inputs. `init --resume` intentionally does not reconcile this marker.
 
 ## Evaluator and review
 
-Create Evaluator via `spawn_agent` with transaction, archived inputs, commands, and raw evidence. It never edits files or relaxes criteria. Verify checks exercise each `AC-NNN`, inspect output, and cover regressions. Tests mirroring assumptions or skipping the public path are insufficient; use `UNVERIFIED` unless evidence distinguishes correct from plausible incorrect behavior. Missing required raw evidence is `UNVERIFIED`. Reference, never create, SHA-256-bound logs. Reuse it with `followup_task`.
+`spawn_agent` Evaluator with transaction, archived inputs, commands, raw evidence. Never edit or relax criteria. Verify checks exercise each `AC-NNN`, inspect output, and cover regressions. Tests mirroring assumptions or skipping the public path are insufficient; use `UNVERIFIED` unless evidence distinguishes correct from plausible incorrect behavior. Missing required raw evidence is `UNVERIFIED`. Reference, never create, SHA-256-bound logs. Reuse it with `followup_task`.
 
-Require one fenced complete Schema 2 JSON under `## Evaluation record`; substitute transaction values, repeat criteria:
+Require one fenced complete Schema 2 JSON under `## Evaluation record`; replace every transaction and evidence placeholder with actual transaction values and raw evidence; repeat criteria:
 
 ```json
 {"schema_version":2,"requirement_id":"REQ-001","round":1,"revision":"0000000000000000000000000000000000000000","workspace_fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","goal_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","plan_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","implementation_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","verdict": "FAIL","criteria":[{"id":"AC-001","verdict": "PASS","evidence_ids":["EV-001"]},{"id":"AC-002","verdict": "FAIL","evidence_ids":["EV-002"]},{"id":"AC-003","verdict": "UNVERIFIED","evidence_ids":[]}],"evidence":[{"id":"EV-001","kind": "command","command":"!","exit_code":0,"summary":"!","observations":[{"kind": "exact","name":"output","value":"!"},{"kind": "metric","name":"tests","value":1,"unit":"!"}]},{"id":"EV-002","kind": "inspection","subject":"!","summary":"!","observations":[{"kind": "artifact","path":"x","sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}]}],"residual_risks":[]}
 ```
 
-Top verdict is derived from criteria: `FAIL` over `UNVERIFIED` over `PASS`. Command evidence has `"kind": "command"`, `"observations"`, and typed `exact`, `metric`, or repository-relative `artifact` observations, including `"kind": "metric"`.
+Top verdict is derived from criteria: `FAIL` over `UNVERIFIED` over `PASS`. Command evidence has `"kind": "command"`, `"observations"`, and typed `exact`, `metric`, or repository-relative `artifact` observations.
 
 Root checks relevance. User-visible `PASS` must execute the evaluated revision's public entrypoint and inspect output; unit-only or mocked evidence is `UNVERIFIED`. Replace weak `PASS` through `record-review`; pressure cannot supply evidence.
 
-Runtime prepares state; `record-review` atomically copies output from outside `TARGET_ROOT`, digests it, and applies verdict; never hand-edit transaction fields.
+`record-review` atomically copies output from outside `TARGET_ROOT`, digests it, applies verdict; never hand-edit transaction fields.
 
 ```bash
+HARNESS="$SKILL_ROOT/scripts/harness.py"
 python3 "$HARNESS" record-review \
   --target "$TARGET_ROOT" --requirement REQ-NNN \
   --review-source "/temporary/path/outside/repository/review.md"
@@ -112,6 +114,7 @@ python3 "$HARNESS" record-review \
 Only structured `PASS` may run `accept`; reject transaction-input or review drift. `check --final` rechecks all hashes and receipts. Maximum 999 rounds.
 
 ```bash
+HARNESS="$SKILL_ROOT/scripts/harness.py"
 python3 "$HARNESS" restart-evaluation \
   --target "$TARGET_ROOT" --requirement REQ-NNN --reason "<observed drift>"
 
@@ -132,8 +135,8 @@ Unusable role: keep round, select phase:
 - `BUILDING`: spawn a replacement Generator.
 - `EVALUATING`: spawn a replacement Evaluator.
 
-Replay artifacts, snapshots, instructions, Git status; `wait_agent`. Post-interruption replacement is not normal-round recreation.
+Replay artifacts, snapshots, instructions, Git status; `wait_agent`. Replacement is not normal-round recreation.
 
 ## File maintenance
 
-No copied rules, fixed role configs, governance stubs, or speculative ADRs; update docs only when facts change.
+No copied rules, fixed role configs, governance stubs, speculative ADRs, or duplicate progress logs; update docs only when facts change.
