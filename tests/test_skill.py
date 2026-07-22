@@ -1,12 +1,31 @@
 from __future__ import annotations
 
+import importlib.util
+import json
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "SKILL.md"
+HARNESS_PATH = ROOT / "scripts" / "harness.py"
+
+
+def _load_harness_runtime() -> object:
+    name = "_vibe_coding_harness_skill_contract_runtime"
+    spec = importlib.util.spec_from_file_location(name, HARNESS_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load harness runtime")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+HARNESS_RUNTIME = _load_harness_runtime()
 
 
 class SkillStructureTests(unittest.TestCase):
@@ -19,6 +38,13 @@ class SkillStructureTests(unittest.TestCase):
         cls.agent_metadata = (ROOT / "agents" / "openai.yaml").read_text(
             encoding="utf-8"
         )
+
+    def _section(self, heading: str) -> str:
+        marker = f"## {heading}\n"
+        start = self.skill.index(marker) + len(marker)
+        match = re.search(r"^## ", self.skill[start:], flags=re.MULTILINE)
+        end = len(self.skill) if match is None else start + match.start()
+        return self.skill[start:end]
 
     def test_description_is_a_trigger_not_a_workflow_summary(self) -> None:
         frontmatter = self.skill.split("---", 2)[1]
@@ -45,27 +71,131 @@ class SkillStructureTests(unittest.TestCase):
         self.assertIn("Reuse it with `followup_task`", self.skill)
 
     def test_role_prompts_require_autonomous_verified_progress(self) -> None:
-        required_contracts = (
+        planner = self._section("Planner: once per requirement")
+        generator = self._section("Generator: build rounds")
+        evaluator = self._section("Evaluator and review")
+
+        planner_contracts = (
+            "smallest ordered independently verifiable work units",
             "ordered independently verifiable work units",
+            "explicit dependencies and required execution order",
             "success signal",
             "canonical verifier",
             "optional fast check",
             "broader regression/public-path check",
             "actionable failure output",
+            "stable observable behavior or a Goal-required repository invariant",
+            "ordinary implementation details are not acceptance criteria",
+        )
+        generator_contracts = (
             "Loop: choose the smallest unfinished step",
             "fastest deterministic check",
             "Stop only when every `AC-NNN` has implementation and verification",
+            "prevents further safe progress",
+            "Finish all independent safe work first",
             "partial improvement, focused `PASS`, or unrelated failure alone do not stop",
             "regression/public-path checks",
             "large-log path, digest, actionable lines",
+            "compact summary and SHA-256-bound Artifact",
+            "round objective, changed paths, commands/results, unverified items, residual risks, and next verification target",
+            "Autonomy does not expand authority",
+            "publishing, destructive operations, new permissions, or decisions outside the Goal",
+        )
+        evaluator_contracts = (
             "Verify checks exercise each `AC-NNN`, inspect output, and cover regressions",
             "Tests mirroring assumptions or skipping the public path are insufficient",
             "`UNVERIFIED` unless evidence distinguishes correct from plausible incorrect behavior",
             "Reference, never create, SHA-256-bound logs",
+            "raw evidence",
+            "Missing required raw evidence is `UNVERIFIED`",
         )
-        for contract in required_contracts:
-            self.assertIn(contract, self.skill)
-        self.assertNotIn("until perfect", self.skill)
+        for contract in planner_contracts:
+            self.assertIn(contract, planner)
+        for contract in generator_contracts:
+            self.assertIn(contract, generator)
+        for contract in evaluator_contracts:
+            self.assertIn(contract, evaluator)
+
+        self.assertNotIn("implementation details may be acceptance criteria", planner)
+        self.assertNotIn("any concrete external blocker", generator)
+        self.assertNotIn("autonomy expands authority", generator)
+        self.assertNotIn("until perfect", planner + generator + evaluator)
+
+    def test_evaluator_schema_2_contract_is_exact_and_runtime_valid(self) -> None:
+        evaluator = self._section("Evaluator and review")
+        match = re.search(r"```json\n(.*?)\n```", evaluator, flags=re.DOTALL)
+        self.assertIsNotNone(match)
+        assert match is not None
+        record = json.loads(match.group(1))
+
+        self.assertEqual(
+            set(record),
+            {
+                "schema_version",
+                "requirement_id",
+                "round",
+                "revision",
+                "workspace_fingerprint",
+                "goal_sha256",
+                "plan_sha256",
+                "implementation_sha256",
+                "verdict",
+                "criteria",
+                "evidence",
+                "residual_risks",
+            },
+        )
+        self.assertEqual(
+            [item["verdict"] for item in record["criteria"]],
+            ["PASS", "FAIL", "UNVERIFIED"],
+        )
+        for criterion in record["criteria"]:
+            self.assertEqual(set(criterion), {"id", "verdict", "evidence_ids"})
+        self.assertEqual(
+            set(record["evidence"][0]),
+            {"id", "kind", "command", "exit_code", "summary", "observations"},
+        )
+        self.assertEqual(
+            set(record["evidence"][1]),
+            {"id", "kind", "subject", "summary", "observations"},
+        )
+        self.assertEqual(
+            [set(item) for item in record["evidence"][0]["observations"]],
+            [
+                {"kind", "name", "value"},
+                {"kind", "name", "value", "unit"},
+            ],
+        )
+        self.assertEqual(
+            set(record["evidence"][1]["observations"][0]),
+            {"kind", "path", "sha256"},
+        )
+        self.assertIn(
+            "Top verdict is derived from criteria: `FAIL` over `UNVERIFIED` over `PASS`",
+            evaluator,
+        )
+
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        record["revision"] = revision
+        body = (
+            "# Review\n\n## Evaluation record\n\n```json\n"
+            + json.dumps(record, indent=2)
+            + "\n```\n"
+        )
+        accepted = HARNESS_RUNTIME._validated_review(
+            body,
+            ["AC-001", "AC-002", "AC-003"],
+            ROOT,
+            None,
+            verify_artifacts=False,
+        )
+        self.assertEqual(accepted["verdict"], "FAIL")
 
     def test_skill_uses_explicit_schema_v3_evaluation_commands(self) -> None:
         for command in (
@@ -83,10 +213,12 @@ class SkillStructureTests(unittest.TestCase):
         self.assertNotIn("sets `status=ACCEPTED`", self.skill)
 
     def test_skill_requires_stable_acceptance_ids_and_evaluation_json(self) -> None:
-        self.assertIn("`## Acceptance criteria`", self.skill)
-        self.assertIn("`AC-NNN`", self.skill)
-        self.assertIn("`## Evaluation record`", self.skill)
-        self.assertIn("workspace_fingerprint", self.skill)
+        planner = self._section("Planner: once per requirement")
+        evaluator = self._section("Evaluator and review")
+        self.assertIn("`## Acceptance criteria`", planner)
+        self.assertIn("`AC-NNN`", planner)
+        self.assertIn("`## Evaluation record`", evaluator)
+        self.assertIn("workspace_fingerprint", evaluator)
         for field in (
             "requirement_id",
             "round",
@@ -94,19 +226,22 @@ class SkillStructureTests(unittest.TestCase):
             "plan_sha256",
             "implementation_sha256",
         ):
-            self.assertIn(f'"{field}"', self.skill)
-        self.assertIn("Schema 2", self.skill)
-        self.assertIn('"verdict": "PASS"', self.skill)
-        self.assertIn('"kind": "command"', self.skill)
-        self.assertIn('"observations"', self.skill)
-        self.assertIn('"kind": "metric"', self.skill)
-        self.assertIn("typed `exact`, `metric`", self.skill)
-        self.assertIn("`artifact` observations", self.skill)
-        self.assertNotIn('"result":', self.skill)
-        self.assertNotIn('"overall_verdict"', self.skill)
-        self.assertNotIn('"type": "command"', self.skill)
-        self.assertNotIn("`## Overall verdict`", self.skill)
-        self.assertNotIn("`## Evidence`", self.skill)
+            self.assertIn(f'"{field}"', evaluator)
+        self.assertIn("Schema 2", evaluator)
+        self.assertIn('"verdict": "PASS"', evaluator)
+        self.assertIn('"verdict": "FAIL"', evaluator)
+        self.assertIn('"verdict": "UNVERIFIED"', evaluator)
+        self.assertIn('"kind": "command"', evaluator)
+        self.assertIn('"kind": "inspection"', evaluator)
+        self.assertIn('"observations"', evaluator)
+        self.assertIn('"kind": "exact"', evaluator)
+        self.assertIn('"kind": "metric"', evaluator)
+        self.assertIn('"kind": "artifact"', evaluator)
+        self.assertNotIn('"result":', evaluator)
+        self.assertNotIn('"overall_verdict"', evaluator)
+        self.assertNotIn('"type": "command"', evaluator)
+        self.assertNotIn("`## Overall verdict`", evaluator)
+        self.assertNotIn("`## Evidence`", evaluator)
 
     def test_read_only_roles_are_audited_not_claimed_as_sandboxed(self) -> None:
         self.assertIn("instruction-level read-only", self.skill)
