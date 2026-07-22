@@ -44,6 +44,29 @@ class SkillStructureTests(unittest.TestCase):
         self.assertIn("Reuse the requirement's Generator", self.skill)
         self.assertIn("Reuse it with `followup_task`", self.skill)
 
+    def test_role_prompts_require_autonomous_verified_progress(self) -> None:
+        required_contracts = (
+            "ordered independently verifiable work units",
+            "success signal",
+            "canonical verifier",
+            "optional fast check",
+            "broader regression/public-path check",
+            "actionable failure output",
+            "Loop: choose the smallest unfinished step",
+            "fastest deterministic check",
+            "Stop only when every `AC-NNN` has implementation and verification",
+            "partial improvement, focused `PASS`, or unrelated failure alone do not stop",
+            "regression/public-path checks",
+            "large-log path, digest, actionable lines",
+            "Verify checks exercise each `AC-NNN`, inspect output, and cover regressions",
+            "Tests mirroring assumptions or skipping the public path are insufficient",
+            "`UNVERIFIED` unless evidence distinguishes correct from plausible incorrect behavior",
+            "Reference, never create, SHA-256-bound logs",
+        )
+        for contract in required_contracts:
+            self.assertIn(contract, self.skill)
+        self.assertNotIn("until perfect", self.skill)
+
     def test_skill_uses_explicit_schema_v3_evaluation_commands(self) -> None:
         for command in (
             "snapshot",
