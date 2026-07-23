@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibe-coding-harness"
+version = "0.1.0.dev0"
+description = "Recoverable external controller for parallel specialist coding agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "jijunling", email = "jijunling@kuaishou.com" }]
+dependencies = []
+
+[project.scripts]
+vibe = "vibe.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/vibe/prompts/planner" = ["prompts/planner/*.md"]
+"share/vibe/prompts/workers/base" = ["prompts/workers/base/*.md"]
+"share/vibe/prompts/workers/implementation" = [
+  "prompts/workers/implementation/*.md",
+]
+"share/vibe/prompts/workers/testing" = ["prompts/workers/testing/*.md"]
+"share/vibe/prompts/workers/performance" = ["prompts/workers/performance/*.md"]
+"share/vibe/prompts/workers/code-quality" = [
+  "prompts/workers/code-quality/*.md",
+]
+"share/vibe/prompts/workers/documentation" = [
+  "prompts/workers/documentation/*.md",
+]
+"share/vibe/prompts/workers/general" = ["prompts/workers/general/*.md"]
+"share/vibe/prompts/evaluator" = ["prompts/evaluator/*.md"]
+"share/vibe/schemas" = ["schemas/*.json"]
