@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from vibe.cli import build_parser, main
@@ -163,6 +164,59 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse(value["ok"])
         self.assertEqual(value["schema_version"], 1)
+
+    def test_migrate_reports_every_import_in_human_and_json_modes(self) -> None:
+        imported = SimpleNamespace(
+            as_dict=lambda: {
+                "requirement_id": "REQ-001",
+                "run_id": "RUN-20260723-001",
+                "mapped_status": "PAUSED",
+                "migration_id": "MIG-0123456789abcdef0123",
+                "backup_path": (
+                    ".vibe-coding/schema3-backups/"
+                    "MIG-0123456789abcdef0123/REQ-001"
+                ),
+            }
+        )
+        with mock.patch(
+            "vibe.cli.resolve_target",
+            return_value=self.target,
+        ), mock.patch(
+            "vibe.migration.schema3.migrate_schema3",
+            return_value=(imported,),
+        ):
+            code, human, _ = self.call_main(
+                "migrate",
+                "--target",
+                str(self.target),
+                "--requirement",
+                "REQ-001",
+                "--base",
+                "HEAD",
+            )
+            json_code, output, _ = self.call_main(
+                "migrate",
+                "--target",
+                str(self.target),
+                "--requirement",
+                "REQ-001",
+                "--base",
+                "HEAD",
+                "--json",
+            )
+        self.assertEqual(code, 0)
+        for expected in (
+            "REQ-001",
+            "RUN-20260723-001",
+            "PAUSED",
+            "MIG-0123456789abcdef0123",
+            ".vibe-coding/schema3-backups",
+        ):
+            self.assertIn(expected, human)
+        self.assertEqual(json_code, 0)
+        value = json.loads(output)
+        self.assertEqual(value["imports"][0]["requirement_id"], "REQ-001")
+        self.assertEqual(value["imports"][0]["mapped_status"], "PAUSED")
 
 
 if __name__ == "__main__":

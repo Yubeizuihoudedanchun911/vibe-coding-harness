@@ -625,7 +625,20 @@ def _handle(args: argparse.Namespace) -> int:
                 for item in imports
             ],
         }
-        _emit(value, json_output=args.json)
+        if args.json:
+            _emit(value, json_output=True)
+        else:
+            for item in value["imports"]:
+                _emit(
+                    (
+                        f"{item['requirement_id']} -> "
+                        f"{item['run_id']} "
+                        f"{item['mapped_status']} "
+                        f"migration={item['migration_id']} "
+                        f"backup={item['backup_path']}"
+                    ),
+                    json_output=False,
+                )
         return 0
     raise CliUsageError("a command is required")
 

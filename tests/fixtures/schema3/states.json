@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "states": {
+    "ACCEPTED": {
+      "schema_version": 3,
+      "requirement_id": "REQ-001",
+      "goal": "Preserve accepted Schema 3 evidence",
+      "status": "ACCEPTED",
+      "phase": "EVALUATING",
+      "active_round": 1,
+      "next_action": "Accepted.",
+      "accepted_revision": "BASE_SHA",
+      "evaluation": null,
+      "latest_verdict": "PASS",
+      "residual_risks": [],
+      "failed_evaluations": [],
+      "review_attempts": [],
+      "interruption_history": [],
+      "pending_evaluation": null,
+      "pending_review": null,
+      "pending_interruption": null
+    },
+    "DEGRADED": {
+      "schema_version": 3,
+      "requirement_id": "REQ-001",
+      "goal": "Preserve degraded Schema 3 evidence",
+      "status": "DEGRADED",
+      "phase": "BUILDING",
+      "active_round": 2,
+      "next_action": "Degradation accepted.",
+      "accepted_revision": "",
+      "evaluation": null,
+      "latest_verdict": "FAIL",
+      "residual_risks": [
+        "Historical residual risk"
+      ],
+      "failed_evaluations": [
+        {
+          "round": 1,
+          "evaluation": {
+            "schema_version": 2,
+            "verdict": "FAIL"
+          }
+        }
+      ],
+      "review_attempts": [],
+      "interruption_history": [],
+      "pending_evaluation": null,
+      "pending_review": null,
+      "pending_interruption": null,
+      "degradation_acceptance": "Explicitly accepted for historical import."
+    },
+    "ACTIVE": {
+      "schema_version": 3,
+      "requirement_id": "REQ-001",
+      "goal": "Continue active work under Schema 4",
+      "status": "ACTIVE",
+      "phase": "PLANNING",
+      "active_round": 1,
+      "next_action": "Dispatch Planner and persist plan.md.",
+      "accepted_revision": "",
+      "evaluation": null,
+      "latest_verdict": null,
+      "residual_risks": [],
+      "failed_evaluations": [],
+      "review_attempts": [],
+      "interruption_history": [],
+      "pending_evaluation": null,
+      "pending_review": null,
+      "pending_interruption": null
+    },
+    "BLOCKED": {
+      "schema_version": 3,
+      "requirement_id": "REQ-001",
+      "goal": "Replan blocked historical work",
+      "status": "BLOCKED",
+      "phase": "BUILDING",
+      "active_round": 2,
+      "next_action": "Resolve the recorded blocker.",
+      "accepted_revision": "",
+      "evaluation": null,
+      "latest_verdict": "FAIL",
+      "residual_risks": [
+        "Historical blocker"
+      ],
+      "failed_evaluations": [
+        {
+          "round": 1,
+          "evaluation": {
+            "schema_version": 2,
+            "verdict": "FAIL"
+          }
+        }
+      ],
+      "review_attempts": [],
+      "interruption_history": [
+        {
+          "round": 1,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "pending_evaluation": null,
+      "pending_review": null,
+      "pending_interruption": null
+    }
+  }
+}

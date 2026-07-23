@@ -264,7 +264,6 @@ class Controller:
         run_id: str,
         replan: bool = False,
     ) -> dict[str, object]:
-        del replan
         self._require_runtime_dependencies()
         store = self.dependencies.store_factory(
             self.target,
@@ -274,6 +273,26 @@ class Controller:
         with store.lock():
             state = self._recover_locked(store)
             status = RunStatus(state["status"])
+            migration_replan = bool(
+                status is RunStatus.PAUSED
+                and isinstance(state.get("last_error"), dict)
+                and state["last_error"].get("code")
+                == "SCHEMA3_REPLAN_REQUIRED"
+            )
+            if replan:
+                if not migration_replan:
+                    raise ContractError(
+                        "--replan is valid only for a finalized "
+                        "Schema 3 migration"
+                    )
+                state = self._replan_migrated_and_register_controller(
+                    state
+                )
+                return self._drive_locked(state)
+            if migration_replan:
+                raise StateConflictError(
+                    "migrated Schema 3 run requires explicit --replan"
+                )
             if status in {
                 RunStatus.SUCCEEDED,
                 RunStatus.FAILED,
@@ -292,6 +311,84 @@ class Controller:
             )
             self._recover_dispatches(start_unlaunched=True)
             return self._drive_locked(store.load())
+
+    def _replan_migrated_and_register_controller(
+        self,
+        state: dict[str, object],
+    ) -> dict[str, object]:
+        if (
+            state["status"] != "PAUSED"
+            or state["resume_status"] is not None
+            or state["plan_version"] != 0
+            or state["plans"]
+            or state["tasks"]
+            or state["legacy_import"] is None
+            or not isinstance(state["last_error"], dict)
+            or state["last_error"].get("code")
+            != "SCHEMA3_REPLAN_REQUIRED"
+        ):
+            raise ContractError(
+                "migrated run is not eligible for Schema 4 replanning"
+            )
+        completion = [
+            item
+            for item in state["artifact_index"]
+            if item["path"] == "migration-completion.json"
+        ]
+        if len(completion) != 1:
+            raise ContractError(
+                "migrated run lacks a bound migration completion"
+            )
+        baseline = self.dependencies.worktrees.assert_clean_baseline()
+        repository = state["repository"]
+        if (
+            baseline.identity != repository["identity"]
+            or baseline.base_sha != repository["base_sha"]
+            or repository["integration_head"]
+            != repository["base_sha"]
+            or self.dependencies.worktrees.resolve_ref(
+                repository["integration_ref"]
+            )
+            != repository["base_sha"]
+        ):
+            raise StateConflictError(
+                "migrated run no longer matches its Schema 4 baseline"
+            )
+        pid = os.getpid()
+        identity = process_start_identity(pid)
+        group = os.getpgrp()
+        token = f"CONTROLLER-{uuid.uuid4()}"
+        store = self._active_store()
+
+        def replan(
+            current: dict[str, object],
+            refs: Mapping[str, ArtifactRef],
+        ) -> None:
+            del refs
+            if (
+                current["revision"] != state["revision"]
+                or current["status"] != "PAUSED"
+                or current["last_error"] != state["last_error"]
+            ):
+                raise StateConflictError(
+                    "migrated run changed before replanning"
+                )
+            current["status"] = "CREATED"
+            current["resume_status"] = None
+            current["controller"] = {
+                "pid": pid,
+                "process_start_identity": identity,
+                "process_group": group,
+                "controller_token": token,
+            }
+            current["last_error"] = None
+            current["updated_at"] = self._now()
+
+        return store.transact(
+            state["revision"],
+            {},
+            replan,
+        )
 
     def recover_and_stop(
         self,
@@ -3158,6 +3255,7 @@ class Controller:
             if runs.is_dir()
             else set()
         )
+        names.update(self._reserved_migration_run_ids())
         refs = {
             ref
             for ref, _ in self.dependencies.worktrees.snapshot_protected_git().refs
@@ -3170,6 +3268,52 @@ class Controller:
             ):
                 return run_id
         raise ContractError("daily run ID space is exhausted")
+
+    def _reserved_migration_run_ids(self) -> set[str]:
+        root = (
+            self.target
+            / ".vibe-coding"
+            / "migrations"
+            / "reservations"
+        )
+        if not root.exists() and not root.is_symlink():
+            return set()
+        if root.is_symlink() or not root.is_dir():
+            raise ContractError(
+                "migration reservations path is unsafe"
+            )
+        reserved: set[str] = set()
+        for path in sorted(root.iterdir()):
+            if path.suffix != ".json":
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise ContractError(
+                    "migration reservation is unsafe"
+                )
+            value = load_json_object(path)
+            if (
+                value.get("schema_version") != 1
+                or value.get("state") != "PREPARED"
+                or not isinstance(value.get("requirements"), list)
+            ):
+                raise ContractError(
+                    "migration reservation is invalid"
+                )
+            for item in value["requirements"]:
+                if not isinstance(item, dict):
+                    raise ContractError(
+                        "migration reservation entry is invalid"
+                    )
+                run_id = item.get("run_id")
+                if (
+                    not isinstance(run_id, str)
+                    or RUN_DIR_RE.fullmatch(run_id) is None
+                ):
+                    raise ContractError(
+                        "migration reservation run ID is invalid"
+                    )
+                reserved.add(run_id)
+        return reserved
 
     def _allocation_lock(self):
         class _Lock:
