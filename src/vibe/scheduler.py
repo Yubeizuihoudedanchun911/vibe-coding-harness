@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import heapq
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Iterable, Sequence
 
@@ -9,11 +11,13 @@ from vibe.config import resolve_command_ids
 from vibe.models import (
     ACCEPTANCE_ID_RE,
     TASK_ID_RE,
+    ArtifactRef,
     ContractError,
     FrozenRunConfig,
     PlanDocument,
     TaskContract,
 )
+from vibe.worktrees import TaskWorktree
 
 
 DEFAULT_WORKER_TYPES = frozenset(
@@ -56,6 +60,176 @@ def path_matches_scope(path: str, scope: str) -> bool:
     if scope.endswith("/"):
         return path.startswith(scope)
     return path == scope
+
+
+def scopes_overlap(
+    left: tuple[str, ...],
+    right: tuple[str, ...],
+) -> bool:
+    normalized_left = tuple(normalize_scope(scope) for scope in left)
+    normalized_right = tuple(normalize_scope(scope) for scope in right)
+    for first in normalized_left:
+        for second in normalized_right:
+            if first == "." or second == ".":
+                return True
+            if first.rstrip("/") == second.rstrip("/"):
+                return True
+            if first.endswith("/") and path_matches_scope(
+                second.rstrip("/"),
+                first,
+            ):
+                return True
+            if second.endswith("/") and path_matches_scope(
+                first.rstrip("/"),
+                second,
+            ):
+                return True
+    return False
+
+
+def resources_overlap(
+    left: tuple[str, ...],
+    right: tuple[str, ...],
+) -> bool:
+    return bool(set(left).intersection(right))
+
+
+def new_task_state(contract: TaskContract) -> dict[str, object]:
+    if TASK_ID_RE.fullmatch(contract.id) is None:
+        raise ContractError("task contract has an invalid ID")
+    if type(contract.max_attempts) is not int or contract.max_attempts < 1:
+        raise ContractError("task contract max_attempts is invalid")
+    return {
+        "status": "PENDING",
+        "attempt_no": 0,
+        "failure_count": 0,
+        "max_attempts": contract.max_attempts,
+        "active_attempt": None,
+        "attempts": [],
+        "result": None,
+        "verification": None,
+        "source_commits": [],
+        "integrated_commits": [],
+        "last_error": None,
+    }
+
+
+def start_attempt(
+    task_state: dict[str, object],
+    task_base_sha: str,
+    task_worktree: TaskWorktree,
+    attempt_token: str,
+) -> None:
+    if (
+        task_state.get("status") not in {"PENDING", "READY"}
+        or task_state.get("active_attempt") is not None
+    ):
+        raise ContractError("task is not ready for a new Attempt")
+    attempt_no = task_state.get("attempt_no")
+    failures = task_state.get("failure_count")
+    maximum = task_state.get("max_attempts")
+    if (
+        type(attempt_no) is not int
+        or type(failures) is not int
+        or type(maximum) is not int
+        or failures >= maximum
+    ):
+        raise ContractError("task Attempt counters are invalid or exhausted")
+    if not attempt_token or "/" in attempt_token:
+        raise ContractError("attempt_token is invalid")
+    if task_base_sha != task_worktree.base_sha:
+        raise ContractError("task worktree base does not match Attempt base")
+    next_attempt = attempt_no + 1
+    branch_suffix = f"-a{next_attempt}"
+    if not task_worktree.branch.endswith(branch_suffix):
+        raise ContractError("task worktree branch does not match Attempt number")
+    task_id = task_worktree.branch.rsplit("/", 1)[-1][
+        : -len(branch_suffix)
+    ]
+    relative_worktree = _control_relative_path(task_worktree.path)
+    created_at = datetime.now(timezone.utc).isoformat(
+        timespec="microseconds"
+    )
+    task_state["attempt_no"] = next_attempt
+    task_state["status"] = "RUNNING"
+    task_state["active_attempt"] = {
+        "attempt_token": attempt_token,
+        "status": "STARTING",
+        "created_at": created_at,
+        "task_base_sha": task_base_sha,
+        "branch": task_worktree.branch,
+        "worktree": relative_worktree,
+        "preflight": None,
+        "provider_handle": None,
+        "result_path": (
+            f"tasks/{task_id}/attempts/{next_attempt:03d}/result.json"
+        ),
+    }
+
+
+def bind_attempt_preflight(
+    task_state: dict[str, object],
+    attempt_token: str,
+    preflight_ref: ArtifactRef,
+) -> None:
+    active = task_state.get("active_attempt")
+    if (
+        task_state.get("status") != "RUNNING"
+        or not isinstance(active, dict)
+        or active.get("status") != "STARTING"
+        or active.get("attempt_token") != attempt_token
+    ):
+        raise ContractError("Attempt preflight owner or status does not match")
+    result_path = active.get("result_path")
+    if not isinstance(result_path, str):
+        raise ContractError("Attempt result path is invalid")
+    expected = result_path.rsplit("/", 1)[0] + "/preflight.json"
+    if preflight_ref.path != expected:
+        raise ContractError("Attempt preflight path is not canonical")
+    value = preflight_ref.as_dict()
+    existing = active.get("preflight")
+    if existing is not None and existing != value:
+        raise ContractError("Attempt preflight is immutable")
+    active["preflight"] = value
+
+
+def close_attempt(
+    task_state: dict[str, object],
+    status: str,
+    error: dict[str, object] | None,
+    retryable: bool,
+) -> None:
+    active = task_state.get("active_attempt")
+    if task_state.get("status") not in {
+        "RUNNING",
+        "READY_TO_INTEGRATE",
+    } or not isinstance(active, dict):
+        raise ContractError("task has no active Attempt to close")
+    if active.get("preflight") is None and status != "CANCELLED":
+        raise ContractError("terminal Attempt requires an immutable preflight")
+    if status not in {"SUCCEEDED", "FAILED", "CANCELLED", "ABANDONED"}:
+        raise ContractError("terminal Attempt status is invalid")
+    task_state["active_attempt"] = None
+    task_state["last_error"] = error
+    if status == "SUCCEEDED":
+        task_state["status"] = "INTEGRATING"
+        return
+    if status == "CANCELLED":
+        task_state["status"] = "CANCELLED"
+        return
+    if status == "ABANDONED":
+        task_state["status"] = "FAILED"
+        return
+    if retryable:
+        failures = task_state.get("failure_count")
+        maximum = task_state.get("max_attempts")
+        if type(failures) is not int or type(maximum) is not int:
+            raise ContractError("task failure counters are invalid")
+        failures += 1
+        task_state["failure_count"] = failures
+        task_state["status"] = "READY" if failures < maximum else "FAILED"
+    else:
+        task_state["status"] = "FAILED"
 
 
 def effective_global_verification(
@@ -134,6 +308,80 @@ class Scheduler:
         document: PlanDocument,
     ) -> tuple[str, ...]:
         return self._topological_order(document.tasks)
+
+    def promote_ready(
+        self,
+        state: dict[str, object],
+        plan: PlanDocument,
+    ) -> list[str]:
+        tasks_state = state.get("tasks")
+        if not isinstance(tasks_state, dict):
+            raise ContractError("run task state is invalid")
+        promoted: list[str] = []
+        for task_id in self.topological_order(plan):
+            task = next(item for item in plan.tasks if item.id == task_id)
+            current = tasks_state.get(task_id)
+            if not isinstance(current, dict) or current.get("status") != "PENDING":
+                continue
+            if all(
+                isinstance(tasks_state.get(dependency), dict)
+                and tasks_state[dependency].get("status") == "COMPLETED"
+                for dependency in task.depends_on
+            ):
+                current["status"] = "READY"
+                promoted.append(task_id)
+        return promoted
+
+    def dispatchable(
+        self,
+        state: dict[str, object],
+        plan: PlanDocument,
+    ) -> list[str]:
+        if state.get("status") != "EXECUTING":
+            return []
+        maximum = state.get("max_workers")
+        tasks_state = state.get("tasks")
+        if type(maximum) is not int or maximum < 1:
+            return []
+        if not isinstance(tasks_state, dict):
+            raise ContractError("run task state is invalid")
+        contracts = {task.id: task for task in plan.tasks}
+        active_ids = [
+            task_id
+            for task_id, value in tasks_state.items()
+            if isinstance(value, dict)
+            and value.get("status")
+            in {"RUNNING", "READY_TO_INTEGRATE", "INTEGRATING"}
+        ]
+        if any(task_id not in contracts for task_id in active_ids):
+            return []
+        available = maximum - len(active_ids)
+        if available <= 0:
+            return []
+        reservations = [contracts[task_id] for task_id in active_ids]
+        selected: list[str] = []
+        for task_id in self.topological_order(plan):
+            if len(selected) >= available:
+                break
+            value = tasks_state.get(task_id)
+            if not isinstance(value, dict) or value.get("status") != "READY":
+                continue
+            candidate = contracts[task_id]
+            if any(
+                scopes_overlap(
+                    candidate.path_scope,
+                    reserved.path_scope,
+                )
+                or resources_overlap(
+                    candidate.exclusive_resources,
+                    reserved.exclusive_resources,
+                )
+                for reserved in reservations
+            ):
+                continue
+            selected.append(task_id)
+            reservations.append(candidate)
+        return selected
 
     def _validate_versions(
         self,
@@ -252,3 +500,17 @@ class Scheduler:
         if len(ordered) != len(tasks):
             raise ContractError("Planner task graph contains a cycle")
         return tuple(ordered)
+
+
+def _control_relative_path(path: Path) -> str:
+    parts = path.absolute().parts
+    try:
+        index = parts.index(".vibe-coding")
+    except ValueError as error:
+        raise ContractError(
+            "task worktree must be below .vibe-coding"
+        ) from error
+    relative = PurePosixPath(*parts[index:]).as_posix()
+    if not relative.startswith(".vibe-coding/worktrees/"):
+        raise ContractError("task worktree path is outside the worktree root")
+    return relative
