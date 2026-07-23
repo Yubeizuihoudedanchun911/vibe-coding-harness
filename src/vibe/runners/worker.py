@@ -96,8 +96,8 @@ class WorkerRunner:
             "max_attempts": task.max_attempts,
         }
         branch = (
-            f"refs/heads/vibe/run-{run_id}/"
-            f"task-{task.id}"
+            f"refs/heads/vibe/{run_id}/"
+            f"{task.id}-a{attempt_no}"
         )
         context = {
             "repository_instructions": repository_instructions,

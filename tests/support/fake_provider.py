@@ -4,6 +4,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from vibe.models import ProviderStatus
 from vibe.providers.base import (
@@ -228,6 +229,106 @@ class ScriptedProvider:
                 body=Path(handle.result_path).read_bytes(),
                 exit_code=0,
             )
+
+
+@dataclass
+class ProviderScript:
+    role: str
+    result_body: bytes | Callable[[ProviderRequest], bytes]
+    on_start: Callable[[ProviderRequest], None] | None = None
+    release: threading.Event | None = None
+    failure: ProviderFailure | None = None
+
+
+class ScenarioProvider(ScriptedProvider):
+    def __init__(self, scripts: list[ProviderScript]) -> None:
+        super().__init__()
+        self.scripts = scripts
+        self.started: list[str] = []
+        self.requests: list[ProviderRequest] = []
+        self.active: set[str] = set()
+        self.maximum_active = 0
+        self._scenario_lock = threading.Lock()
+        self._background_threads: list[threading.Thread] = []
+
+    def start(self, request: ProviderRequest) -> ProviderHandle:
+        with self._scenario_lock:
+            if not self.scripts:
+                raise AssertionError(
+                    f"no Provider script remains for role {request.role}"
+                )
+            script = self.scripts.pop(0)
+        if script.role != request.role:
+            raise AssertionError(
+                f"expected role {script.role}, received {request.role}"
+            )
+        if script.on_start is not None:
+            script.on_start(request)
+        handle = super().start(request)
+        with self._scenario_lock:
+            self.started.append(request.attempt_token)
+            self.requests.append(request)
+            self.active.add(request.attempt_token)
+            self.maximum_active = max(
+                self.maximum_active,
+                len(self.active),
+            )
+        if script.failure is not None:
+            self.fail(request.attempt_token, script.failure)
+            with self._scenario_lock:
+                self.active.discard(request.attempt_token)
+            return handle
+        result_body = (
+            script.result_body(request)
+            if callable(script.result_body)
+            else script.result_body
+        )
+        Path(request.result_path).write_bytes(result_body)
+        if script.release is None or script.release.is_set():
+            self.complete(request.attempt_token)
+            with self._scenario_lock:
+                self.active.discard(request.attempt_token)
+        else:
+            thread = threading.Thread(
+                target=self._complete_when_released,
+                args=(request.attempt_token, script.release),
+                daemon=True,
+            )
+            with self._scenario_lock:
+                self._background_threads.append(thread)
+            thread.start()
+        return handle
+
+    def _complete_when_released(
+        self,
+        attempt_token: str,
+        release: threading.Event,
+    ) -> None:
+        if not release.wait(timeout=10):
+            self.record_background_failure(
+                AssertionError(
+                    f"release timed out for {attempt_token}"
+                )
+            )
+            with self._scenario_lock:
+                self.active.discard(attempt_token)
+            return
+        self.complete(attempt_token)
+        with self._scenario_lock:
+            self.active.discard(attempt_token)
+
+    def join_background(self, timeout: float = 10) -> None:
+        with self._scenario_lock:
+            threads = tuple(self._background_threads)
+        for thread in threads:
+            thread.join(timeout)
+            if thread.is_alive():
+                self.record_background_failure(
+                    AssertionError(
+                        f"Provider completion thread leaked: {thread.name}"
+                    )
+                )
+        self.assert_no_background_failures()
 
 
 def _publish_json(

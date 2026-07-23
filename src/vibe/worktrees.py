@@ -628,7 +628,11 @@ class WorktreeManager:
         for offset in range(0, len(fields) - 1, 2):
             ref = fields[offset].lstrip("\n")
             oid = fields[offset + 1].lstrip("\n")
-            if ref and ref != excluded_ref:
+            if (
+                ref
+                and ref != excluded_ref
+                and not ref.startswith("refs/heads/vibe/")
+            ):
                 refs.append((ref, oid))
         common_dir = self._common_git_dir()
         packed_refs = self._read_optional(common_dir / "packed-refs")
