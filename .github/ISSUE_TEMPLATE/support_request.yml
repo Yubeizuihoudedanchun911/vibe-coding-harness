@@ -1,0 +1,79 @@
+name: Support request
+description: Ask for help using the external Controller, CLI, migration, or Provider integration.
+title: "[Support]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for public usage help. Search the documentation and existing issues first.
+        Do not include secrets or private repository data. Report suspected vulnerabilities privately through SECURITY.md.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Vibe Coding Harness needs clarification?
+      options:
+        - Installation
+        - Configuration
+        - CLI usage
+        - Migration or recovery
+        - Provider integration
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: Commit SHA or release tag you are using.
+      placeholder: 40-character commit SHA or release tag
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python version, and Codex CLI version when relevant.
+      placeholder: macOS 15, Python 3.12, Codex CLI 1.x
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to accomplish, and where are you blocked?
+      placeholder: Describe the desired outcome and the specific point that needs clarification.
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempts
+    attributes:
+      label: What have you tried?
+      description: List the documentation, commands, or troubleshooting steps already attempted.
+      placeholder: Include sanitized commands and their outcomes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant evidence
+      description: Add the smallest sanitized output needed to understand the request.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I read README.md and SUPPORT.md and searched existing issues.
+          required: true
+        - label: I removed credentials, private code, and personal data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

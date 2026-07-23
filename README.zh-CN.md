@@ -178,7 +178,8 @@ python -m compileall -q src/vibe
 默认 CI 只运行离线测试。真实 Codex CLI smoke 必须通过对应环境变量显式
 启用，CI 不会默认联系 Provider。
 
-提交贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，安全漏洞请按
+提交贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，公开使用问题请按
+[SUPPORT.md](SUPPORT.md) 选择正确入口，安全漏洞请按
 [SECURITY.md](SECURITY.md) 私下报告。
 
 ## 许可证

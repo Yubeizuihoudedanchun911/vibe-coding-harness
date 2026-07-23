@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose a focused improvement to the Skill or harness runtime.
+description: Propose a focused improvement to the external Controller, CLI, or packaged runtime.
 title: "[Feature]: "
 labels:
   - enhancement

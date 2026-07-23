@@ -16,11 +16,13 @@ class RepositoryHealthTests(unittest.TestCase):
             "CONTRIBUTING.md",
             "CODE_OF_CONDUCT.md",
             "SECURITY.md",
+            "SUPPORT.md",
             "CHANGELOG.md",
             "LICENSE",
             ".github/PULL_REQUEST_TEMPLATE.md",
             ".github/ISSUE_TEMPLATE/bug_report.yml",
             ".github/ISSUE_TEMPLATE/feature_request.yml",
+            ".github/ISSUE_TEMPLATE/support_request.yml",
             ".github/ISSUE_TEMPLATE/config.yml",
             ".github/workflows/ci.yml",
             ".github/dependabot.yml",
@@ -111,6 +113,43 @@ class RepositoryHealthTests(unittest.TestCase):
         self.assertIn("blank_issues_enabled: false", config)
         self.assertIn(advisory_path, config)
         self.assertIn(advisory_path, security)
+
+    def test_support_routes_requests_without_legacy_skill_wording(self) -> None:
+        support_path = ROOT / "SUPPORT.md"
+        support_form_path = (
+            ROOT / ".github/ISSUE_TEMPLATE/support_request.yml"
+        )
+        self.assertTrue(support_path.is_file())
+        self.assertTrue(support_form_path.is_file())
+        support = support_path.read_text(encoding="utf-8")
+        support_form = support_form_path.read_text(encoding="utf-8")
+        issue_forms = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                ".github/ISSUE_TEMPLATE/bug_report.yml",
+                ".github/ISSUE_TEMPLATE/feature_request.yml",
+                ".github/ISSUE_TEMPLATE/support_request.yml",
+            )
+        )
+        for template in (
+            "support_request.yml",
+            "bug_report.yml",
+            "feature_request.yml",
+        ):
+            self.assertIn(f"issues/new?template={template}", support)
+        self.assertIn("vibe-coding-harness/security/advisories/new", support)
+        self.assertIn("name: Support request", support_form)
+        self.assertIn("This is not a security vulnerability", support_form)
+        self.assertNotIn("Skill or harness runtime", issue_forms)
+        self.assertIn(
+            "support request",
+            (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").lower(),
+        )
+        for readme in ("README.md", "README.zh-CN.md"):
+            self.assertIn(
+                "[SUPPORT.md](SUPPORT.md)",
+                (ROOT / readme).read_text(encoding="utf-8"),
+            )
 
     def test_local_agent_state_is_ignored(self) -> None:
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")

@@ -24,6 +24,8 @@ All notable changes are documented here. The format follows
   stable claims, backup trees, reserved Run IDs, and `--replan`.
 - Offline fake-Provider and opt-in real Codex CLI tests, package metadata
   checks, wheel/sdist smoke tests, and macOS process-identity coverage.
+- Public support policy and a structured support request Issue Form, with
+  separate routes for bugs, features, and private vulnerability reports.
 
 ### Changed
 

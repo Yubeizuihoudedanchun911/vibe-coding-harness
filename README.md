@@ -186,8 +186,9 @@ The offline suite is the default gate. A real Codex CLI smoke test is opt-in
 through its documented environment flag; CI does not contact a Provider by
 default.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and report
-vulnerabilities privately according to [SECURITY.md](SECURITY.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, use
+[SUPPORT.md](SUPPORT.md) for public help, and report vulnerabilities privately
+according to [SECURITY.md](SECURITY.md).
 
 ## License
 
