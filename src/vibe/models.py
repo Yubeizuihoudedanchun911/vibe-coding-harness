@@ -276,6 +276,30 @@ class AttemptManifest:
     last_error: dict[str, object] | None
 
 
+@dataclass(frozen=True)
+class PendingIntegration:
+    operation_id: str
+    task_id: str
+    attempt_no: int
+    expected_head: str
+    candidate_head: str
+    source_base: str
+    source_head: str
+    verification: ArtifactRef
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "task_id": self.task_id,
+            "attempt_no": self.attempt_no,
+            "expected_head": self.expected_head,
+            "candidate_head": self.candidate_head,
+            "source_base": self.source_base,
+            "source_head": self.source_head,
+            "verification": self.verification.as_dict(),
+        }
+
+
 RUN_FIELDS = {
     "schema_version",
     "run_id",

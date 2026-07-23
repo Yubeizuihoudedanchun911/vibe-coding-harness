@@ -57,6 +57,10 @@ _FIXED_PREFIX = (
     "tag.gpgSign=false",
     "-c",
     "credential.helper=",
+    "-c",
+    "user.name=Vibe Controller",
+    "-c",
+    "user.email=vibe-controller@localhost",
 )
 
 

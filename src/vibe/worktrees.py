@@ -536,6 +536,61 @@ class WorktreeManager:
             )
         return TaskWorktree(path.resolve(), branch, base)
 
+    def create_disposable_worktree(
+        self,
+        run_id: str,
+        category: str,
+        operation_id: str,
+        base_sha: str,
+    ) -> Path:
+        self._validate_id(run_id, "run_id")
+        self._validate_id(operation_id, "operation_id")
+        if category not in {"candidates", "read-only"}:
+            raise ContractError("disposable worktree category is invalid")
+        base = _resolve_revision(self.runner, self.target, base_sha)
+        run_root = self.worktree_root / run_id
+        path = run_root / category / operation_id
+        self._require_below(path, run_root)
+        if path.exists():
+            if _revision(self.runner, path) != base:
+                raise ContractError(
+                    "existing disposable worktree has the wrong base"
+                )
+        else:
+            self._ensure_safe_directory(path.parent)
+            self.runner.run_local(
+                self.target,
+                "worktree",
+                "add",
+                "--detach",
+                str(path),
+                base,
+            )
+        return path.resolve()
+
+    def resolve_ref(self, ref: str) -> str:
+        return _resolve_revision(self.runner, self.target, ref)
+
+    def update_ref(
+        self,
+        ref: str,
+        new_oid: str,
+        expected_oid: str,
+    ) -> None:
+        new = _resolve_revision(self.runner, self.target, new_oid)
+        expected = _resolve_revision(
+            self.runner,
+            self.target,
+            expected_oid,
+        )
+        self.runner.run_local(
+            self.target,
+            "update-ref",
+            ref,
+            new,
+            expected,
+        )
+
     def snapshot_protected_git(
         self,
         excluded_ref: str | None = None,
