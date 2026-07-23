@@ -1,4 +1,0 @@
-interface:
-  display_name: "Vibe Coding Harness"
-  short_description: "Run durable, snapshot-bound coding goals"
-  default_prompt: "Use $vibe-coding-harness as Root: dispatch isolated role contexts serially, audit read-only roles with workspace snapshots, persist schema 3 evaluation records bound to exact transaction inputs through lifecycle commands, preserve hash-bound attempts and receipts with prepared recovery markers, restart drifted evaluations explicitly, and accept only the exact evidenced repository snapshot."

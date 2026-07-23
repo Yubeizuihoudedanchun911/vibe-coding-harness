@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe.local/schemas/evaluation-v1.schema.json",
+  "title": "Vibe evaluation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "verdict",
+    "criteria",
+    "findings",
+    "evidence_requests",
+    "residual_risks"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "verdict": {
+      "enum": ["PASS", "NEEDS_REPAIR", "UNVERIFIED", "BLOCKED"]
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "verdict", "evidence_ids"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^AC-[0-9]{3}$"
+          },
+          "verdict": {
+            "enum": ["PASS", "FAIL", "UNVERIFIED", "BLOCKED"]
+          },
+          "evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterion_id",
+          "severity",
+          "evidence",
+          "affected_paths",
+          "repair_hint"
+        ],
+        "properties": {
+          "criterion_id": {
+            "type": "string",
+            "pattern": "^AC-[0-9]{3}$"
+          },
+          "severity": {
+            "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+          },
+          "evidence": {"type": "string", "minLength": 1},
+          "affected_paths": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "repair_hint": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "evidence_requests": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+      }
+    },
+    "residual_risks": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

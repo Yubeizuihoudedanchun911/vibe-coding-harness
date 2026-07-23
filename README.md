@@ -6,146 +6,189 @@
 
 [简体中文](README.zh-CN.md)
 
-Vibe Coding Harness is a Codex Skill for software goals that span multiple sessions. It separates planning, implementation, and evaluation into isolated agent roles while keeping durable, requirement-scoped recovery evidence in the target Git repository.
+## What it is
 
-## Why it exists
+Vibe Coding Harness is an external, recoverable Controller for running a
+Planner, parallel specialist Workers, and an independent Evaluator against a
+Git repository. The installed `vibe` CLI owns orchestration and durable Schema
+4 state; chat history is never the recovery source of truth.
 
-Long-running coding tasks fail when intent, implementation state, or evaluation evidence exists only in chat history. This Skill keeps the user-facing workflow simple while enforcing:
-
-- one audited, instruction-level read-only Planner per requirement;
-- one business-code-writing Generator;
-- one independently contextualized, audited Evaluator;
-- serial role execution and bounded repair loops;
-- snapshot-bound acceptance evidence for Git-visible workspace bytes;
-- durable recovery across context and session boundaries.
-
-## How it works
+## Architecture
 
 ```text
-User goal
-   |
-   v
-Root orchestrator
-   |
-   +--> Planner (read-only, once)
-   |
-   +--> Generator (only business-code writer)
-   |          ^
-   |          |
-   +--> Evaluator (read-only) -- FAIL --> repair round
+goal -> Planner -> finite dependency DAG
                     |
-                    +-- PASS --> Goal Gate --> ACCEPTED
+                    +-> specialist Workers in isolated attempts
+                    |      (parallel only when paths/resources are safe)
+                    v
+              serial candidate verification + Git CAS
+                    |
+                    v
+              independent Evaluator
+                    |
+        PASS / NEEDS_REPAIR / UNVERIFIED / BLOCKED
 ```
 
-Each goal owns a durable record:
-
-```text
-.vibe-coding/requirements/REQ-NNN/
-├── state.json
-├── plan.md
-└── rounds/
-    └── NNN/
-        ├── evaluation-inputs/
-        │   ├── plan.md
-        │   └── implementation.md
-        ├── attempts/
-        │   └── NNN.md
-        ├── implementation.md
-        ├── review.md
-        └── interruption.json
-```
-
-The repository artifacts are the recovery contract. Agent chat is a control channel, not the source of truth.
+The Controller is the sole state writer. Every Worker Attempt receives a fresh
+worktree, branch, provider process, and prompt context. Candidate commits are
+verified serially and update the run ref only through compare-and-swap. A
+bounded repair loop sends findings back to a fresh Planner operation.
 
 ## Requirements
 
-- Codex with multi-agent tools: `spawn_agent`, `followup_task`, and `wait_agent`
 - Git
 - Python 3.10 or newer
+- Codex CLI available to the Provider adapter
 
-If multi-agent tools are unavailable, the Skill records the requirement as blocked instead of silently letting the Root agent implement business code.
+The product repository must start from a clean committed baseline. There is no
+`--allow-dirty` mode.
 
 ## Install
 
-Clone the repository into the Codex skills directory:
-
 ```bash
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-git clone --branch master --single-branch \
-  https://github.com/Yubeizuihoudedanchun911/vibe-coding-harness.git \
-  "${CODEX_HOME:-$HOME/.codex}/skills/vibe-coding-harness"
+git clone \
+  https://github.com/Yubeizuihoudedanchun911/vibe-coding-harness.git
+cd vibe-coding-harness
+python -m pip install .
+vibe --help
 ```
 
-To update an existing installation:
+## Configuration
 
-```bash
-git -C "${CODEX_HOME:-$HOME/.codex}/skills/vibe-coding-harness" pull --ff-only
+Optional repository-local `vibe.json` configures concurrency, limits, and an
+explicit verification command catalog:
+
+```json
+{
+  "scheduler": {"max_workers": 4},
+  "limits": {
+    "task_attempts": 3,
+    "provider_retries": 3,
+    "evidence_rounds": 3,
+    "repair_rounds": 3,
+    "max_plan_tasks": 128
+  },
+  "verification": {
+    "command_catalog": [
+      {
+        "id": "unit",
+        "purpose": "Run the offline unit suite",
+        "argv": ["python", "-m", "unittest", "discover", "-s", "tests"],
+        "cwd": ".",
+        "timeout_seconds": 900,
+        "env_allowlist": []
+      }
+    ],
+    "required_command_ids": ["unit"]
+  }
+}
 ```
 
-## Use
+Non-empty project commands require the explicit
+`--allow-project-commands` flag. Their exact source digest and authorization
+mode are frozen into the run.
 
-Start a Codex task with a user-visible goal:
-
-```text
-Use $vibe-coding-harness to build and verify an MVP expense tracker.
-```
-
-Codex handles role selection and the implementation/evaluation loop. Schema 3 uses explicit evaluation transactions:
+## Run
 
 ```bash
-python3 scripts/harness.py init --target /path/to/repo \
+vibe run --target /path/to/repo \
   --goal "Build and verify an MVP expense tracker"
-python3 scripts/harness.py snapshot --target /path/to/repo
-python3 scripts/harness.py begin-evaluation --target /path/to/repo \
-  --requirement REQ-001
-python3 scripts/harness.py record-review --target /path/to/repo \
-  --requirement REQ-001 \
-  --review-source /tmp/review.md
-# Run only when the evaluated snapshot has drifted:
-python3 scripts/harness.py restart-evaluation --target /path/to/repo \
-  --requirement REQ-001 --reason "Describe the observed drift"
-python3 scripts/harness.py accept --target /path/to/repo \
-  --requirement REQ-001
-python3 scripts/harness.py check --final --target /path/to/repo \
-  --requirement REQ-001
 ```
 
-`begin-evaluation` freezes the exact goal, plan, implementation handoff, Git revision, and product workspace bytes as one transaction. It stores `pending_evaluation` before archiving the plan and implementation under `evaluation-inputs/`, then returns the transaction identity and hashes that the Evaluator must repeat. If this write is interrupted, rerun `begin-evaluation`; it completes matching prepared inputs or safely reprepares current ones. `init --resume` deliberately reports this marker instead of reconciling it. The `record-review` source must be a regular file outside the target repository.
+Use `--goal-file` instead of `--goal` for a file-backed goal. A foreground run
+creates `.vibe-coding/runs/RUN-YYYYMMDD-NNN/` and a private
+`refs/heads/vibe/run-*` integration ref.
 
-Review persistence is a two-phase transaction. A prepared marker is stored before `review.md` changes, so `init --resume` can deterministically finish an interrupted write. Replacing a PASS or UNVERIFIED review archives the exact prior bytes under `attempts/`; a FAIL creates a hash-bound historical receipt before advancing the round. `restart-evaluation` similarly prepares and validates `interruption.json`, records its digest in history, and starts a fresh build round only for real transaction-input or evidence-artifact drift.
+## Resume
 
-Schema 3 is a breaking change: schema 2 state is intentionally unsupported and is not migrated. Evaluation records and interruption records use their own schema 2 contracts; their schema 1 forms are also unsupported.
+```bash
+vibe resume --target /path/to/repo RUN-20260723-001
+```
+
+Foreground interruption and `vibe stop` are recoverable. `FAILED` is terminal
+and cannot be resumed: inspect the failure, check out the desired clean commit,
+then start an explicit new `vibe run`, which records that new baseline.
+
+An imported active or blocked Schema 3 requirement needs an explicit clean
+baseline replan:
+
+```bash
+vibe resume --target /path/to/repo RUN-20260723-002 --replan
+```
+
+## Status
+
+```bash
+vibe status --target /path/to/repo RUN-20260723-001
+vibe status --target /path/to/repo RUN-20260723-001 --json
+```
+
+## Stop
+
+```bash
+vibe stop --target /path/to/repo RUN-20260723-001
+```
+
+The stop request is durable and bound to the registered Controller process
+identity. Resuming uses fresh Attempts rather than reusing cancelled context.
+
+## Logs
+
+```bash
+vibe logs --target /path/to/repo RUN-20260723-001
+vibe logs --target /path/to/repo RUN-20260723-001 --task TASK-001
+```
+
+## Schema 3 migration
+
+Schema 3 is never loaded or migrated implicitly. Select one requirement or all
+requirements and bind the import to an explicit Git base:
+
+```bash
+vibe migrate --target /path/to/repo \
+  --requirement REQ-001 --base HEAD
+vibe migrate --target /path/to/repo --all --base refs/heads/main
+```
+
+Migration validates every selected legacy tree before producing a mapping,
+preserves exact bytes and modes under
+`.vibe-coding/schema3-backups/MIG-*/`, and creates immutable claims. `ACCEPTED`
+and `DEGRADED` become `IMPORTED_READ_ONLY`; `ACTIVE` and `BLOCKED` become
+`PAUSED` with `SCHEMA3_REPLAN_REQUIRED`. Changed source bytes or a different
+base conflict with the stable claim. Dirty product bytes may be archived as
+historical context, but never become the Schema 4 base.
 
 ## Safety invariants
 
-- Root orchestrates and persists evidence but never writes business code.
-- Planner and Evaluator are instruction-level read-only roles audited with before/after workspace snapshots.
-- Generator is the only business-code writer.
-- Roles run serially.
-- A PASS review binds schema 2 typed observations to the requirement ID, round, exact goal/plan/implementation hashes, revision, complete workspace fingerprint, acceptance IDs, and review bytes. Free-text summaries are explanatory only; evidence must carry exact values, finite metrics, or repository-relative artifacts whose SHA-256 matches current bytes.
-- Existing dirty files are allowed, but raw tracked bytes, staged, unstaged, non-ignored untracked, and recursively inspected submodule content becomes part of the evaluated fingerprint. Clean filters and `assume-unchanged` cannot mask tracked changes.
-- Snapshotting disables external diff and text-conversion helpers.
-- Archived transaction inputs, replaced review attempts, failed-evaluation receipts, and interruption receipts are rehashed during validation; forged or mutated history is rejected.
-- Lifecycle writes use prepared state markers and atomic file replacement so retries either complete the recorded transaction or fail closed. Orphan lifecycle files are never trusted as committed transaction authority.
-- Evaluation is bounded at 999 rounds, and filesystem/Unicode failures are returned as structured CLI errors without tracebacks.
-- Unrelated user changes are never staged automatically.
-
-See [SKILL.md](SKILL.md) for the complete agent protocol.
+- The Controller alone mutates run state and protected Vibe refs.
+- Planner and Evaluator operations are read-only and audited.
+- Workers may change only their declared path scope; exclusive resources
+  prevent unsafe parallel overlap.
+- Provider output is untrusted until strict JSON/schema and identity checks
+  pass.
+- Attempt, source-commit, integration, evaluation, stop, and migration
+  protocols are retryable across recorded crash windows.
+- Goal success requires completed tasks, current verification evidence, an
+  independent PASS, and the exact integration head.
+- The tool never automatically merges, pushes, opens a pull request, or
+  publishes a package.
 
 ## Development
 
-Run the complete test suite:
-
 ```bash
+python -m pip install --no-deps -e .
 PYTHONDONTWRITEBYTECODE=1 \
-  python3 -m unittest discover -s tests -p 'test_*.py' -v
+  python -m unittest discover -s tests -p 'test_*.py' -v
+python -m compileall -q src/vibe
 ```
 
-The project uses only the Python standard library at runtime.
+The offline suite is the default gate. A real Codex CLI smoke test is opt-in
+through its documented environment flag; CI does not contact a Provider by
+default.
 
-## Contributing and security
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md). Community participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, use
+[SUPPORT.md](SUPPORT.md) for public help, and report vulnerabilities privately
+according to [SECURITY.md](SECURITY.md).
 
 ## License
 

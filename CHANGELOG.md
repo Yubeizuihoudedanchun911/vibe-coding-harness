@@ -1,37 +1,53 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and releases follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
 ### Added
 
-- Requirement-scoped state under `.vibe-coding/requirements/REQ-NNN/`.
-- Planner-once, Generator/Evaluator-loop orchestration.
-- Git-bound Goal Gate validation and evidence requirements.
-- Cross-session role recovery from durable artifacts.
-- Python standard-library CLI and automated test coverage.
-- Apache-2.0 licensing and open-source community governance files.
+- Breaking Schema 4 run state with immutable artifacts, append-only histories,
+  prepared operations, and Git-bound recovery.
+- Installed external `vibe` CLI for run, resume, status, stop, logs, and
+  explicit Schema 3 migration.
+- Versioned Planner, base/specialist Worker, and Evaluator Prompts plus strict
+  plan, Worker-result, and evaluation Schemas.
+- Path/resource-safe parallel specialist Workers with fresh worktree, branch,
+  process, and context per Attempt.
+- Serial candidate verification, source/ref compare-and-swap, prepared
+  dispatch, source-commit, and integration recovery.
+- Independent Evaluator verdicts, evidence refresh, bounded repair, and a
+  Git/evidence-bound Goal Gate.
+- Explicit, read-only, byte-preserving, idempotent Schema 3 migration with
+  stable claims, backup trees, reserved Run IDs, and `--replan`.
+- Offline fake-Provider and opt-in real Codex CLI tests, package metadata
+  checks, wheel/sdist smoke tests, and macOS process-identity coverage.
+- Public support policy and a structured support request Issue Form, with
+  separate routes for bugs, features, and private vulnerability reports.
 
 ### Changed
 
-- Replaced the original global progress-file harness and fixed role configurations with a minimal Skill-driven runtime.
-- Replaced schema 2 with schema 3 evaluation transactions; schema 2 state is intentionally unsupported.
-- Replaced manual evaluation state edits with explicit `snapshot`, `begin-evaluation`, `record-review`, `restart-evaluation`, and `accept` commands.
-- Freeze exact transaction inputs (plan and implementation) for each evaluation, and bind reviews to requirement, round, goal, input hashes, revision, and product snapshot.
-- Preserve replaced reviews, failed evaluations, and interruptions through ordered hash-bound history receipts.
-- Changed Planner and Evaluator claims from sandboxed read-only to audited instruction-level read-only boundaries.
+- Replaced the in-agent Root/Generator serial orchestration model with an
+  external Controller and parallel finite-DAG execution.
+- Replaced requirement-scoped Schema 3 success with native Schema 4 run
+  lifecycle semantics; imported terminal history remains
+  `IMPORTED_READ_ONLY`.
+- Made `FAILED` terminal and foreground stop/resume explicit.
+- Frozen project command authorization and Prompt/Schema identities into every
+  run.
+
+### Removed
+
+- Skill metadata, Root prompt metadata, the legacy Schema 3 mutation script,
+  and their compatibility tests.
+- Implicit migration and dirty-baseline execution.
 
 ### Security
 
-- Reject symbolic-link escapes, invalid state transitions, stale revisions, and empty or malformed review evidence.
-- Bind PASS evidence to the requirement ID, round, exact goal/plan/implementation inputs, evaluated revision, complete workspace fingerprint, acceptance IDs, and exact review bytes.
-- Disable external diff/text-conversion helpers, hash raw tracked bytes independently of clean filters and `assume-unchanged`, and recursively fingerprint initialized submodules.
-- Replace free-text evidence-result inference with evaluation-record schema 2 typed observations: exact values, finite metrics, and repository-relative artifacts verified by SHA-256.
-- Reject case-folded or nested Git/control artifact paths and normalize oversized JSON-number or invalid Unicode-scalar failures without tracebacks.
-- Reconcile evaluation-input, review, and interruption writes with state-first prepared markers and atomic file replacement; reject orphan lifecycle files rather than trusting them.
-- Archive exact evaluation inputs and replaced review bytes, and rehash all historical attempts, FAIL receipts, and interruption receipts during validation.
-- Preserve workspace, goal, plan, implementation, and hash-bound artifact drift in schema 2 `interruption.json` before entering a fresh build round; missing/invalid plans block only after evidence is durable, and schema 1 interruptions are unsupported.
-- Bound evaluation at 999 rounds before lifecycle writes and return expected filesystem, numeric JSON, and Unicode failures as structured errors without tracebacks.
+- Fail closed on symlink/ancestor swaps, malformed strict JSON, stale process
+  identity, out-of-scope Worker changes, unsafe Git integrations, stale CAS,
+  forged artifacts, and incomplete migration mappings.
+- Keep default CI offline and prohibit automated merge, push, pull-request,
+  package publication, or Provider network workflows.

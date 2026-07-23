@@ -6,141 +6,181 @@
 
 [English](README.md)
 
-Vibe Coding Harness 是一套面向 Codex 的长时开发 Skill。它把规划、实现和独立验收拆分给不同角色，同时在目标 Git 仓库中保存按需求隔离、可跨会话恢复的持久化证据。
+## 它是什么
 
-## 解决的问题
+Vibe Coding Harness 是一个运行于 Git 仓库外部、可恢复的 Controller。
+安装后的 `vibe` CLI 负责调度 Planner、并行专项 Worker 和独立 Evaluator，
+并把 Schema 4 状态持久化到目标仓库；聊天上下文不是恢复真相源。
 
-长时开发任务经常因为目标、实现状态或验收证据只存在于聊天上下文而中断。本 Skill 在保持用户交互简洁的同时，强制执行：
-
-- 每个需求只运行一次、通过快照审计的指令级只读 Planner；
-- 只有 Generator 可以修改业务代码；
-- Evaluator 使用独立上下文，并通过前后快照审计只读边界；
-- 角色串行执行，并通过有界修复循环处理失败；
-- 验收证据绑定到具体 Git 提交；
-- 上下文重置或跨会话后仍可从文件恢复。
-
-## 工作方式
+## 架构
 
 ```text
-用户目标
-   |
-   v
-Root 编排器
-   |
-   +--> Planner（只读，每个需求一次）
-   |
-   +--> Generator（唯一业务代码写入者）
-   |          ^
-   |          |
-   +--> Evaluator（只读）-- FAIL --> 修复轮次
-                    |
-                    +-- PASS --> Goal Gate --> ACCEPTED
+目标 -> Planner -> 有限依赖 DAG
+                   |
+                   +-> 隔离 Attempt 中的专项 Worker
+                   |      （仅在路径和资源安全时并行）
+                   v
+              串行候选验证 + Git CAS
+                   |
+                   v
+              独立 Evaluator
+                   |
+       PASS / NEEDS_REPAIR / UNVERIFIED / BLOCKED
 ```
 
-每个目标拥有独立的持久化记录：
-
-```text
-.vibe-coding/requirements/REQ-NNN/
-├── state.json
-├── plan.md
-└── rounds/
-    └── NNN/
-        ├── evaluation-inputs/
-        │   ├── plan.md
-        │   └── implementation.md
-        ├── attempts/
-        │   └── NNN.md
-        ├── implementation.md
-        ├── review.md
-        └── interruption.json
-```
-
-仓库文件是恢复契约；Agent 消息只承担实时调度，不是长期事实来源。
+Controller 是状态的唯一写入者。每个 Worker Attempt 使用新的 worktree、
+分支、Provider 进程和提示词上下文。候选提交经过串行验证后，只能通过
+compare-and-swap 更新 run ref；有界修复循环会把发现交给新的 Planner
+操作。
 
 ## 环境要求
 
-- 支持 `spawn_agent`、`followup_task`、`wait_agent` 的 Codex
 - Git
 - Python 3.10 或更高版本
+- Provider adapter 可调用 Codex CLI
 
-如果运行环境不支持多 Agent，Skill 会记录 `BLOCKED`，不会退化为 Root 直接编写业务代码。
+产品仓库必须从已提交的 clean 基线开始，不提供 `--allow-dirty`。
 
 ## 安装
 
 ```bash
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-git clone --branch master --single-branch \
-  https://github.com/Yubeizuihoudedanchun911/vibe-coding-harness.git \
-  "${CODEX_HOME:-$HOME/.codex}/skills/vibe-coding-harness"
+git clone \
+  https://github.com/Yubeizuihoudedanchun911/vibe-coding-harness.git
+cd vibe-coding-harness
+python -m pip install .
+vibe --help
 ```
 
-更新已有安装：
+## 配置
+
+可选的仓库级 `vibe.json` 用于配置并发、重试上限和显式验证命令：
+
+```json
+{
+  "scheduler": {"max_workers": 4},
+  "limits": {
+    "task_attempts": 3,
+    "provider_retries": 3,
+    "evidence_rounds": 3,
+    "repair_rounds": 3,
+    "max_plan_tasks": 128
+  },
+  "verification": {
+    "command_catalog": [
+      {
+        "id": "unit",
+        "purpose": "运行离线单元测试",
+        "argv": ["python", "-m", "unittest", "discover", "-s", "tests"],
+        "cwd": ".",
+        "timeout_seconds": 900,
+        "env_allowlist": []
+      }
+    ],
+    "required_command_ids": ["unit"]
+  }
+}
+```
+
+非空项目命令必须显式传入 `--allow-project-commands`。命令来源摘要和
+授权模式会冻结到每个 run。
+
+## 启动
 
 ```bash
-git -C "${CODEX_HOME:-$HOME/.codex}/skills/vibe-coding-harness" pull --ff-only
-```
-
-## 使用
-
-在 Codex 中直接提出用户目标：
-
-```text
-使用 $vibe-coding-harness 创建并验收一个个人记账 MVP。
-```
-
-Codex 会在内部完成角色选择、实现和验收循环。Schema 3 使用显式验收事务：
-
-```bash
-python3 scripts/harness.py init \
-  --target /path/to/repo \
+vibe run --target /path/to/repo \
   --goal "创建并验收一个个人记账 MVP"
-python3 scripts/harness.py snapshot --target /path/to/repo
-python3 scripts/harness.py begin-evaluation --target /path/to/repo \
-  --requirement REQ-001
-python3 scripts/harness.py record-review --target /path/to/repo \
-  --requirement REQ-001 \
-  --review-source /tmp/review.md
-# 仅在已评测快照发生漂移时运行：
-python3 scripts/harness.py restart-evaluation --target /path/to/repo \
-  --requirement REQ-001 --reason "说明观察到的漂移"
-python3 scripts/harness.py accept --target /path/to/repo \
-  --requirement REQ-001
-python3 scripts/harness.py check --final --target /path/to/repo \
-  --requirement REQ-001
 ```
 
-`begin-evaluation` 会把精确目标、计划、实现交接、Git revision 和产品工作区字节冻结为一个事务。它先写入 `pending_evaluation`，再把计划与实现快照归档到 `evaluation-inputs/`，最后返回 Evaluator 必须原样复述的事务身份及哈希。若写入中断，重新运行 `begin-evaluation`：匹配的 prepared 输入会被完成，已变化的当前输入会被安全重备。`init --resume` 会主动报告该标记，不负责协调它。`record-review` 的来源必须是目标仓库 outside（外部）的普通文件。
+也可用 `--goal-file` 读取目标文件。前台运行会创建
+`.vibe-coding/runs/RUN-YYYYMMDD-NNN/` 和私有的
+`refs/heads/vibe/run-*` 集成引用。
 
-评审持久化采用两阶段事务：先写入 prepared 状态标记，再修改 `review.md`，因此 `init --resume` 能确定性完成中断写入。替换 PASS 或 UNVERIFIED 评审时，旧评审的精确字节会归档到 `attempts/`；FAIL 在推进轮次前生成哈希绑定的历史收据。`restart-evaluation` 同样先准备并校验 `interruption.json`，把其摘要写入历史，并且只在事务输入或证据产物真实漂移时进入新构建轮次。
+## 恢复
 
-Schema 3 是破坏性升级：不支持也不会迁移 Schema 2 状态。评测记录与中断记录各自使用 Schema 2 契约；它们的 Schema 1 形式同样不受支持。
+```bash
+vibe resume --target /path/to/repo RUN-20260723-001
+```
+
+前台进程中断以及 `vibe stop` 都可恢复。`FAILED` 是终态，不能 resume：
+检查失败后，切换到期望的 clean commit，再显式执行新的 `vibe run`，
+让新 run 记录新的基线。
+
+从 Schema 3 导入的 ACTIVE/BLOCKED 需求需要显式重新规划：
+
+```bash
+vibe resume --target /path/to/repo RUN-20260723-002 --replan
+```
+
+只有迁移已完成、Schema 4 计划为空且当前产品基线 clean 时才允许执行。
+
+## 状态
+
+```bash
+vibe status --target /path/to/repo RUN-20260723-001
+vibe status --target /path/to/repo RUN-20260723-001 --json
+```
+
+## 停止
+
+```bash
+vibe stop --target /path/to/repo RUN-20260723-001
+```
+
+停止请求是持久化的，并绑定到已登记的 Controller 进程身份。恢复时会
+创建新 Attempt，不会复用被取消的上下文。
+
+## 日志
+
+```bash
+vibe logs --target /path/to/repo RUN-20260723-001
+vibe logs --target /path/to/repo RUN-20260723-001 --task TASK-001
+```
+
+## Schema 3 迁移
+
+Schema 3 不会被透明加载或自动迁移。必须选择一个需求或全部需求，并绑定
+到显式 Git base：
+
+```bash
+vibe migrate --target /path/to/repo \
+  --requirement REQ-001 --base HEAD
+vibe migrate --target /path/to/repo --all --base refs/heads/main
+```
+
+迁移会在创建任何映射前校验全部选中树，把精确字节和 mode 保存到
+`.vibe-coding/schema3-backups/MIG-*/`，并创建不可变 claim。
+`ACCEPTED`/`DEGRADED` 映射为 `IMPORTED_READ_ONLY`；
+`ACTIVE`/`BLOCKED` 映射为带 `SCHEMA3_REPLAN_REQUIRED` 的 `PAUSED`。
+相同 source/base 的重试幂等，源字节或 base 变化会冲突。脏产品字节可以
+作为历史上下文归档，但绝不会成为 Schema 4 基线。
 
 ## 安全约束
 
-- Root 只负责编排和证据持久化，不修改业务代码。
-- Planner 与 Evaluator 是指令级只读角色，Root 使用前后工作区快照审计边界。
-- Generator 是唯一业务代码写入者。
-- 所有角色严格串行运行。
-- PASS 必须把评审记录 Schema 2 的 typed observations 绑定到需求 ID、轮次、精确目标/计划/实现哈希、提交、完整工作区指纹、验收标准 ID 和 review 字节。自由文本摘要只用于解释；证据必须给出精确值、有限数值指标，或 SHA-256 与当前字节一致的仓库相对产物。
-- 允许已有 dirty 文件，但 tracked 原始字节、staged、unstaged、非 ignored 的 untracked 产品内容以及递归检查的 submodule 内容都会进入验收指纹；clean filter 和 `assume-unchanged` 无法掩盖 tracked 变化。
-- 快照命令禁用 external diff 与 text-conversion helper。
-- 事务输入归档、被替换的评审尝试、失败评测收据和中断收据都会在校验时重新计算哈希；伪造或篡改历史会被拒绝。
-- 生命周期写入使用 prepared 状态标记和原子文件替换，使重试只能完成已记录事务或安全失败；孤立的生命周期文件不会被当成已提交事务的权威。
-- 评测最多 999 轮；文件系统和 Unicode 错误会以结构化 CLI 错误返回，不输出 traceback。
-- 不自动暂存用户的无关改动。
+- 只有 Controller 可以修改 run 状态和受保护的 Vibe refs。
+- Planner 与 Evaluator 只读运行，并接受前后快照审计。
+- Worker 只能修改声明的 path scope；exclusive resource 防止不安全并行。
+- Provider 输出在通过严格 JSON、Schema 和身份校验前不可信。
+- Attempt、source commit、integration、evaluation、stop 和 migration
+  协议在已覆盖的崩溃窗口内都可幂等恢复。
+- Goal Gate 要求任务全部完成、验证证据绑定当前 integration head，且独立
+  Evaluator 给出 PASS。
+- 工具不会自动 merge、push、创建 PR 或发布包。
 
-完整协议见 [SKILL.md](SKILL.md)。
-
-## 开发与贡献
-
-运行完整测试：
+## 开发
 
 ```bash
+python -m pip install --no-deps -e .
 PYTHONDONTWRITEBYTECODE=1 \
-  python3 -m unittest discover -s tests -p 'test_*.py' -v
+  python -m unittest discover -s tests -p 'test_*.py' -v
+python -m compileall -q src/vibe
 ```
 
-提交贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。安全漏洞请按照 [SECURITY.md](SECURITY.md) 私下报告。社区行为受 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) 约束。
+默认 CI 只运行离线测试。真实 Codex CLI smoke 必须通过对应环境变量显式
+启用，CI 不会默认联系 Provider。
+
+提交贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，公开使用问题请按
+[SUPPORT.md](SUPPORT.md) 选择正确入口，安全漏洞请按
+[SECURITY.md](SECURITY.md) 私下报告。
 
 ## 许可证
 

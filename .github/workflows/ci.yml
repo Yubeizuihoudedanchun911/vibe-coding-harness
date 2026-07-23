@@ -21,30 +21,113 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version:
           - "3.10"
+          - "3.11"
           - "3.12"
+          - "3.13"
           - "3.14"
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Compile runtime
-        run: python -m py_compile scripts/harness.py
+      - name: Install package
+        run: python -m pip install --no-deps -e .
 
-      - name: Run tests
+      - name: Check environment
+        run: python -m pip check
+
+      - name: Compile package
+        run: python -m compileall -q src/vibe
+
+      - name: Run offline tests
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  package:
+    name: Wheel and sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Install build checks
+        run: python -m pip install 'build>=1.2,<2' 'twine>=5,<7'
+
+      - name: Build distributions
+        run: python -m build --outdir "$RUNNER_TEMP/dist"
+
+      - name: Check distributions
+        run: python -m twine check "$RUNNER_TEMP"/dist/*
+
+      - name: Install wheel outside source tree
+        run: |
+          python -m venv "$RUNNER_TEMP/vibe-wheel"
+          "$RUNNER_TEMP/vibe-wheel/bin/python" -m pip install --no-deps "$RUNNER_TEMP"/dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/vibe-wheel/bin/vibe" --help
+          "$RUNNER_TEMP/vibe-wheel/bin/python" -m pip check
+          "$RUNNER_TEMP/vibe-wheel/bin/python" -c "from vibe.prompt_registry import PromptRegistry; r=PromptRegistry.default(); [r.load(i,1) for i in ('planner','workers/base','workers/implementation','workers/testing','workers/performance','workers/code-quality','workers/documentation','workers/general','evaluator')]; assert all((r.schema_root/n).is_file() for n in ('plan-v1.schema.json','worker-result-v1.schema.json','evaluation-v1.schema.json'))"
+
+      - name: Install sdist outside source tree
+        run: |
+          python -m venv "$RUNNER_TEMP/vibe-sdist"
+          "$RUNNER_TEMP/vibe-sdist/bin/python" -m pip install --no-deps "$RUNNER_TEMP"/dist/*.tar.gz
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/vibe-sdist/bin/vibe" --help
+          "$RUNNER_TEMP/vibe-sdist/bin/python" -m pip check
+          "$RUNNER_TEMP/vibe-sdist/bin/python" -c "from vibe.prompt_registry import PromptRegistry; r=PromptRegistry.default(); [r.load(i,1) for i in ('planner','workers/base','workers/implementation','workers/testing','workers/performance','workers/code-quality','workers/documentation','workers/general','evaluator')]; assert all((r.schema_root/n).is_file() for n in ('plan-v1.schema.json','worker-result-v1.schema.json','evaluation-v1.schema.json'))"
+
+  macos:
+    name: macOS process and Controller contracts
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: python -m pip install --no-deps -e .
+
+      - name: Run macOS contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: >-
+          python -m unittest
+          tests.test_codex_cli_adapter
+          tests.test_provider_contract
+          tests.test_controller
+          tests.test_controller_fake_provider
+          tests.test_controller_recovery
+          tests.test_package_metadata
+          -v

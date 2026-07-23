@@ -16,11 +16,13 @@ class RepositoryHealthTests(unittest.TestCase):
             "CONTRIBUTING.md",
             "CODE_OF_CONDUCT.md",
             "SECURITY.md",
+            "SUPPORT.md",
             "CHANGELOG.md",
             "LICENSE",
             ".github/PULL_REQUEST_TEMPLATE.md",
             ".github/ISSUE_TEMPLATE/bug_report.yml",
             ".github/ISSUE_TEMPLATE/feature_request.yml",
+            ".github/ISSUE_TEMPLATE/support_request.yml",
             ".github/ISSUE_TEMPLATE/config.yml",
             ".github/workflows/ci.yml",
             ".github/dependabot.yml",
@@ -28,38 +30,73 @@ class RepositoryHealthTests(unittest.TestCase):
         missing = [path for path in required if not (ROOT / path).is_file()]
         self.assertEqual(missing, [])
 
-    def test_readmes_document_install_usage_and_safety(self) -> None:
+    def test_schema_four_has_one_external_product_entry(self) -> None:
+        self.assertTrue((ROOT / "pyproject.toml").is_file())
+        self.assertTrue((ROOT / "src/vibe/cli.py").is_file())
+        for removed in (
+            "SKILL.md",
+            "agents/openai.yaml",
+            "scripts/harness.py",
+            "tests/test_skill.py",
+            "tests/test_harness.py",
+        ):
+            self.assertFalse((ROOT / removed).exists(), removed)
+
+    def test_readmes_document_install_all_commands_and_migration(self) -> None:
         for name in ("README.md", "README.zh-CN.md"):
             text = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("$vibe-coding-harness", text)
-            self.assertIn("scripts/harness.py", text)
-            self.assertIn("REQ-NNN", text)
+            for command in (
+                "vibe run",
+                "vibe resume",
+                "vibe status",
+                "vibe stop",
+                "vibe logs",
+                "vibe migrate",
+            ):
+                self.assertIn(command, text)
             self.assertIn("Python 3.10", text)
+            self.assertIn("Codex CLI", text)
+            self.assertIn("clean", text.lower())
+            self.assertIn("Schema 3", text)
             self.assertIn("LICENSE", text)
+            self.assertNotIn("$vibe-coding-harness", text)
+            self.assertNotIn("scripts/harness.py", text)
 
-    def test_ci_uses_pinned_actions_and_runs_all_tests(self) -> None:
+    def test_ci_is_pinned_offline_cross_platform_and_non_publishing(
+        self,
+    ) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        action_uses = re.findall(r"uses:\s*([^@\s]+)@([0-9a-f]{40})", workflow)
-        self.assertEqual(
-            action_uses,
-            [
-                (
-                    "actions/checkout",
-                    "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-                ),
-                (
-                    "actions/setup-python",
-                    "ece7cb06caefa5fff74198d8649806c4678c61a1",
-                ),
-            ],
-        )
-        self.assertIn("python -m py_compile scripts/harness.py", workflow)
-        self.assertIn(
-            "python -m unittest discover -s tests -p 'test_*.py' -v",
+        uses_lines = re.findall(
+            r"uses:\s*([^@\s]+)@([^\s]+)",
             workflow,
         )
-        for version in ("3.10", "3.12", "3.14"):
+        self.assertTrue(uses_lines)
+        self.assertTrue(
+            all(
+                re.fullmatch(r"[0-9a-f]{40}", reference)
+                for _, reference in uses_lines
+            )
+        )
+        for version in ("3.10", "3.11", "3.12", "3.13", "3.14"):
             self.assertIn(f'"{version}"', workflow)
+        for required in (
+            "runs-on: macos-14",
+            "python -m pip install --no-deps -e .",
+            "python -m compileall -q src/vibe",
+            "python -m unittest discover -s tests -p 'test_*.py' -v",
+            "python -m build",
+            "python -m twine check",
+            "python -m pip check",
+        ):
+            self.assertIn(required, workflow)
+        lowered = workflow.lower()
+        for forbidden in (
+            "pypi",
+            "publish",
+            "id-token:",
+            "secrets.",
+        ):
+            self.assertNotIn(forbidden, lowered)
 
     def test_license_is_apache_2(self) -> None:
         license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -76,6 +113,43 @@ class RepositoryHealthTests(unittest.TestCase):
         self.assertIn("blank_issues_enabled: false", config)
         self.assertIn(advisory_path, config)
         self.assertIn(advisory_path, security)
+
+    def test_support_routes_requests_without_legacy_skill_wording(self) -> None:
+        support_path = ROOT / "SUPPORT.md"
+        support_form_path = (
+            ROOT / ".github/ISSUE_TEMPLATE/support_request.yml"
+        )
+        self.assertTrue(support_path.is_file())
+        self.assertTrue(support_form_path.is_file())
+        support = support_path.read_text(encoding="utf-8")
+        support_form = support_form_path.read_text(encoding="utf-8")
+        issue_forms = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                ".github/ISSUE_TEMPLATE/bug_report.yml",
+                ".github/ISSUE_TEMPLATE/feature_request.yml",
+                ".github/ISSUE_TEMPLATE/support_request.yml",
+            )
+        )
+        for template in (
+            "support_request.yml",
+            "bug_report.yml",
+            "feature_request.yml",
+        ):
+            self.assertIn(f"issues/new?template={template}", support)
+        self.assertIn("vibe-coding-harness/security/advisories/new", support)
+        self.assertIn("name: Support request", support_form)
+        self.assertIn("This is not a security vulnerability", support_form)
+        self.assertNotIn("Skill or harness runtime", issue_forms)
+        self.assertIn(
+            "support request",
+            (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").lower(),
+        )
+        for readme in ("README.md", "README.zh-CN.md"):
+            self.assertIn(
+                "[SUPPORT.md](SUPPORT.md)",
+                (ROOT / readme).read_text(encoding="utf-8"),
+            )
 
     def test_local_agent_state_is_ignored(self) -> None:
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")

@@ -4,3 +4,7 @@
 __pycache__/
 *.py[cod]
 .worktrees/
+.venv/
+build/
+dist/
+*.egg-info/

@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect behavior in the Skill or harness runtime.
+description: Report reproducible incorrect behavior in the external Controller, CLI, or packaged runtime.
 title: "[Bug]: "
 labels:
   - bug

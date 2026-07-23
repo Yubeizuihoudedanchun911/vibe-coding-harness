@@ -2,37 +2,43 @@
 
 ## Supported versions
 
-The project is currently pre-1.0. Security fixes are applied to the latest commit on the canonical branch. Older commits and unmaintained forks are not supported.
+The project is pre-1.0. Security fixes target the latest commit on the
+canonical branch; older commits and unmaintained forks are unsupported.
 
 ## Report a vulnerability
 
-Do not open a public issue for a suspected vulnerability.
-
-Use GitHub's private vulnerability reporting:
+Do not open a public issue. Use GitHub private vulnerability reporting:
 
 <https://github.com/Yubeizuihoudedanchun911/vibe-coding-harness/security/advisories/new>
 
-Include:
-
-- the affected file, command, or workflow;
-- impact and realistic attack scenario;
-- reproduction steps or a minimal proof of concept;
-- affected revisions;
-- any suggested mitigation.
-
-Do not include secrets or data from repositories you do not own.
-
-Maintainers will acknowledge a complete report as soon as practical, investigate it privately, and coordinate disclosure after a fix is available. Response times are best-effort because this is a community-maintained project.
+Include the affected command or file, realistic impact, reproduction steps,
+affected revisions, and any suggested mitigation. Do not include secrets or
+repository data you do not own.
 
 ## Security boundaries
 
-Reports are especially useful for:
+Reports are especially useful for violations of these boundaries:
 
-- path traversal or symbolic-link escapes;
-- unsafe Git revision handling;
-- acceptance of forged, stale, or empty evidence;
-- accidental disclosure of repository data;
-- commands that can modify files outside the selected Git root;
-- workflows that let the Root, Planner, or Evaluator bypass role permissions.
+- Controller state: only the registered Controller may mutate a locked Schema
+  4 run; revisions, append-only histories, artifacts, and migration claims must
+  remain hash-bound and crash recoverable.
+- Worker scope: an Attempt may change only its declared repository-relative
+  paths and must not alter protected Git/config/remote state.
+- Provider identity: persisted parent/child PID, process-start identity,
+  process group, launch policy, and Attempt token must match before polling,
+  stopping, recovering, or trusting a result.
+- Output schemas: Provider JSON is hostile input until strict UTF-8,
+  duplicate-key, Unicode-scalar, field, and role-specific Schema validation
+  succeeds.
+- Git CAS: source branches, task refs, and run integration refs must never be
+  overwritten without the recorded expected OID.
+- Filesystem confinement: symlinks, non-regular artifacts, traversal, ancestor
+  swaps, and writes outside the target/control roots must fail closed.
+- Migration: Schema 3 source and backup trees must be byte/mode identical;
+  partial batches and reservation races must not create duplicate mappings.
+- Command authorization: project verification commands require explicit user
+  authorization and exact-source digest binding.
 
-General feature requests and non-sensitive bugs belong in the public issue tracker.
+Potential data disclosure, arbitrary command execution, evidence forgery,
+unsafe process termination, or remote-contact paths should always be reported
+privately.
