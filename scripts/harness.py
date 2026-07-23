@@ -23,6 +23,7 @@ SCHEMA_VERSION = 3
 EVALUATION_RECORD_VERSION = 2
 INTERRUPTION_RECORD_VERSION = 2
 MAX_ROUNDS = 999
+MAX_JSON_INTEGER_DIGITS = 4300
 RUN_STATUSES = {"ACTIVE", "BLOCKED", "DEGRADED", "ACCEPTED"}
 TERMINAL_STATUSES = ("DEGRADED", "ACCEPTED")
 PHASES = {"PLANNING", "BUILDING", "EVALUATING"}
@@ -132,6 +133,15 @@ def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise HarnessError(f"duplicate JSON key: {key}")
         value[key] = item
     return value
+
+
+def _parse_json_integer(value: str) -> int:
+    digits = value[1:] if value.startswith("-") else value
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError(
+            "integer string conversion exceeds application digit limit"
+        )
+    return int(value)
 
 
 def _reject_symlink(path: Path, label: str) -> None:
@@ -666,6 +676,7 @@ def _load_state(path: Path) -> dict[str, Any]:
         value = json.loads(
             path.read_text(encoding="utf-8"),
             object_pairs_hook=_strict_json_object,
+            parse_int=_parse_json_integer,
         )
     except HarnessError:
         raise
@@ -907,6 +918,7 @@ def _evaluation_record(body: str) -> dict[str, Any]:
         record = json.loads(
             match.group(1),
             object_pairs_hook=_strict_json_object,
+            parse_int=_parse_json_integer,
         )
     except HarnessError:
         raise
@@ -1538,6 +1550,7 @@ def _interruption_record(body: str, target: Path) -> dict[str, Any]:
         record = json.loads(
             body,
             object_pairs_hook=_strict_json_object,
+            parse_int=_parse_json_integer,
         )
     except HarnessError:
         raise
