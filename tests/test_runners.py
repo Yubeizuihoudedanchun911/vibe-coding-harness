@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.fake_provider import ScriptedProvider
+from tests.support.git_repo import GitRepositoryFixture
 from tests.test_models import minimal_state
 from vibe.models import (
     CommandAuthorization,
@@ -37,6 +38,7 @@ from vibe.state_store import (
     artifact_ref,
     canonical_json_bytes,
 )
+from vibe.worktrees import GitReadOnlyAudit, WorktreeManager
 
 
 class _Audit:
@@ -698,6 +700,38 @@ class RunnerTests(unittest.TestCase):
             ),
             "residual_risks": [],
         }
+
+
+class GitReadOnlyRunnerAuditTests(
+    GitRepositoryFixture,
+    unittest.TestCase,
+):
+    def setUp(self) -> None:
+        self.setUpGitRepository()
+        self.audit = GitReadOnlyAudit(WorktreeManager(self.target))
+
+    def test_planner_source_change_invalidates_otherwise_valid_plan(self) -> None:
+        before = self.audit.capture(self.target)
+        (self.target / "README.md").write_text(
+            "changed\n",
+            encoding="utf-8",
+        )
+        after = self.audit.capture(self.target)
+        with self.assertRaisesRegex(
+            ContractError,
+            "read-only role changed",
+        ):
+            self.audit.assert_unchanged(before, after)
+
+    def test_planner_ref_change_invalidates_otherwise_valid_plan(self) -> None:
+        before = self.audit.capture(self.target)
+        self.git("update-ref", "refs/heads/unauthorized", "HEAD")
+        after = self.audit.capture(self.target)
+        with self.assertRaisesRegex(
+            ContractError,
+            "read-only role changed",
+        ):
+            self.audit.assert_unchanged(before, after)
 
 
 if __name__ == "__main__":

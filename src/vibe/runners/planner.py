@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Sequence
 
 from vibe.models import (
     AcceptanceCriterion,
@@ -25,6 +25,7 @@ from vibe.runners import (
     RoleInvocation,
     require_operation_id,
 )
+from vibe.scheduler import Scheduler
 from vibe.state_store import canonical_json_bytes
 
 
@@ -50,6 +51,8 @@ class PlannerRunner:
         config: FrozenRunConfig,
         config_sha256: str,
         read_only_audit: ReadOnlyAudit,
+        scheduler: Scheduler | None = None,
+        prior_plans: Sequence[PlanDocument] = (),
     ) -> None:
         self.registry = registry
         self.provider = provider
@@ -59,6 +62,8 @@ class PlannerRunner:
         self.config = config
         self.config_sha256 = config_sha256
         self.read_only_audit = read_only_audit
+        self.scheduler = scheduler or Scheduler(WORKER_TYPES)
+        self.prior_plans = tuple(prior_plans)
         self._audits: dict[
             str,
             tuple[dict[str, object], RoleInvocation],
@@ -357,7 +362,7 @@ class PlannerRunner:
                     max_attempts=maximum,
                 )
             )
-        return PlanDocument(
+        document = PlanDocument(
             schema_version=1,
             plan_version=plan_version,
             summary=summary,
@@ -365,6 +370,12 @@ class PlannerRunner:
             global_verification=global_verification,
             tasks=tuple(tasks),
         )
+        self.scheduler.validate_plan(
+            document,
+            self.config,
+            self.prior_plans,
+        )
+        return document
 
 
 def _exact_object(
