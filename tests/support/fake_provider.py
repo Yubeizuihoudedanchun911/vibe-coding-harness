@@ -180,6 +180,12 @@ class ScriptedProvider:
                     forced=False,
                 )
             run.stopped = True
+            result_path = Path(run.request.result_path)
+            if (
+                result_path.exists()
+                and not result_path.is_symlink()
+            ):
+                result_path.unlink()
             _publish_json(
                 Path(run.request.exit_path),
                 {

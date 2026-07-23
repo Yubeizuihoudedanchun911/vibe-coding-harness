@@ -300,6 +300,47 @@ class PendingIntegration:
         }
 
 
+@dataclass(frozen=True)
+class StopRequest:
+    run_id: str
+    observed_revision: int
+    controller_token: str
+    requested_at: str
+    nonce: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "observed_revision": self.observed_revision,
+            "controller_token": self.controller_token,
+            "requested_at": self.requested_at,
+            "nonce": self.nonce,
+        }
+
+
+@dataclass(frozen=True)
+class StopReceipt:
+    request: StopRequest
+    outcome: str
+    stopped_tokens: tuple[str, ...]
+    forced_tokens: tuple[str, ...]
+    completed_at: str
+
+    def as_dict(self) -> dict[str, object]:
+        if self.outcome not in {
+            "STOPPED",
+            "IGNORED_STALE_CONTROLLER",
+        }:
+            raise ContractError("stop receipt outcome is invalid")
+        return {
+            "request": self.request.as_dict(),
+            "outcome": self.outcome,
+            "stopped_tokens": list(self.stopped_tokens),
+            "forced_tokens": list(self.forced_tokens),
+            "completed_at": self.completed_at,
+        }
+
+
 RUN_FIELDS = {
     "schema_version",
     "run_id",

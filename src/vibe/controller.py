@@ -23,17 +23,29 @@ from vibe.models import (
     EvaluationVerdict,
     FrozenRunConfig,
     PlanDocument,
+    PromptRef,
     ProviderStatus,
     RunStatus,
+    StateConflictError,
+    StopReceipt,
+    StopRequest,
     TaskContract,
     goal_gate_satisfied,
 )
 from vibe.providers.base import (
     ProviderAdapter,
     ProviderHandle,
+    ProviderRequest,
+    handle_from_pending,
+    request_from_pending,
 )
 from vibe.providers.codex_cli import process_start_identity
-from vibe.runners import DispatchLedger, RoleInvocation, role_attempt_prefix
+from vibe.runners import (
+    DispatchLedger,
+    RoleInvocation,
+    bind_matching_handle,
+    role_attempt_prefix,
+)
 from vibe.runners.evaluator import EvaluatorRunner
 from vibe.runners.planner import PlannerRunner
 from vibe.runners.worker import WorkerRunner
@@ -50,9 +62,12 @@ from vibe.state_store import (
     artifact_ref,
     canonical_json_bytes,
     load_json_object,
+    open_absolute_directory_no_follow,
     open_absolute_regular_no_follow,
     parse_json_object_bytes,
     read_bounded,
+    read_optional_regular_at,
+    replace_mutable_at,
 )
 from vibe.verification import (
     VerificationEnvironmentError,
@@ -92,6 +107,9 @@ class ControllerDependencies:
     clock: Callable[[], datetime]
     sleep: Callable[[float], None]
     fault_hook: Callable[[str], None]
+    wake_signal: (
+        Callable[[dict[str, object]], None] | None
+    ) = None
 
 
 @dataclass(frozen=True)
@@ -171,17 +189,838 @@ class Controller:
         del replan
         self._require_runtime_dependencies()
         store = self.dependencies.store_factory(self.target, run_id)
-        self._store = store
-        assert self.dependencies.planner is not None
-        provider = self.dependencies.planner.provider
-        self._ledger = DispatchLedger(
-            store,
-            provider,
-            fault_hook=self.dependencies.fault_hook,
-        )
+        self._set_run_context(store)
         with store.lock():
             state = self._register_controller(store.load())
             return self._drive_locked(state)
+
+    def request_stop(self, run_id: str) -> StopRequest:
+        store = self.dependencies.store_factory(
+            self.target,
+            run_id,
+        )
+        state = store.load()
+        if state["run_id"] != run_id:
+            raise ContractError("stop run ID does not match state")
+        controller = state.get("controller")
+        if not isinstance(controller, dict):
+            raise StateConflictError(
+                "run has no registered foreground Controller"
+            )
+        control_fd = self._control_directory(
+            store,
+            create=True,
+        )
+        try:
+            existing = read_optional_regular_at(
+                control_fd,
+                "stop.request",
+                max_bytes=64 * 1024,
+            )
+            if existing is not None:
+                request = self._parse_stop_request(existing)
+                if request.run_id != run_id:
+                    raise ContractError(
+                        "existing stop request targets another run"
+                    )
+                return request
+            request = StopRequest(
+                run_id=run_id,
+                observed_revision=state["revision"],
+                controller_token=controller[
+                    "controller_token"
+                ],
+                requested_at=self._now(),
+                nonce=f"STOP-{uuid.uuid4()}",
+            )
+            replace_mutable_at(
+                control_fd,
+                "stop.request",
+                canonical_json_bytes(request.as_dict()),
+            )
+        finally:
+            os.close(control_fd)
+        if self.dependencies.wake_signal is not None:
+            self.dependencies.wake_signal(controller)
+        return request
+
+    def recover(
+        self,
+        run_id: str,
+        replan: bool = False,
+    ) -> dict[str, object]:
+        del replan
+        self._require_runtime_dependencies()
+        store = self.dependencies.store_factory(
+            self.target,
+            run_id,
+        )
+        self._set_run_context(store)
+        with store.lock():
+            return self._recover_locked(store)
+
+    def resume(
+        self,
+        run_id: str,
+        replan: bool = False,
+    ) -> dict[str, object]:
+        del replan
+        self._require_runtime_dependencies()
+        store = self.dependencies.store_factory(
+            self.target,
+            run_id,
+        )
+        self._set_run_context(store)
+        with store.lock():
+            state = self._recover_locked(store)
+            status = RunStatus(state["status"])
+            if status in {
+                RunStatus.SUCCEEDED,
+                RunStatus.FAILED,
+                RunStatus.IMPORTED_READ_ONLY,
+            }:
+                return state
+            if status not in {
+                RunStatus.PAUSED,
+                RunStatus.STOPPED,
+            }:
+                raise StateConflictError(
+                    "resume requires PAUSED or STOPPED state"
+                )
+            state = self._restore_and_register_controller(
+                state
+            )
+            self._recover_dispatches(start_unlaunched=True)
+            return self._drive_locked(store.load())
+
+    def recover_and_stop(
+        self,
+        run_id: str,
+        request: StopRequest,
+    ) -> dict[str, object]:
+        self._require_runtime_dependencies()
+        if request.run_id != run_id:
+            raise ContractError("stop request run ID mismatch")
+        store = self.dependencies.store_factory(
+            self.target,
+            run_id,
+        )
+        self._set_run_context(store)
+        with store.lock():
+            state = store.load()
+            self._recover_dispatches(start_unlaunched=False)
+            result = self._consume_stop_request(
+                store.load(),
+                expected=request,
+            )
+            if result is None:
+                raise ContractError(
+                    "durable stop request is unavailable"
+                )
+            return result.state
+
+    def _set_run_context(self, store: StateStore) -> None:
+        self._store = store
+        assert self.dependencies.planner is not None
+        self._ledger = DispatchLedger(
+            store,
+            self.dependencies.planner.provider,
+            fault_hook=self.dependencies.fault_hook,
+        )
+
+    def _recover_locked(
+        self,
+        store: StateStore,
+    ) -> dict[str, object]:
+        state = store.load()
+        self._recover_dispatches(start_unlaunched=False)
+        state = store.load()
+        stop = self._consume_stop_request(state)
+        if stop is not None:
+            state = stop.state
+            if state["status"] == "STOPPED":
+                return state
+        if state["pending_evaluation"] is not None:
+            state = self._accept_pending_evaluation(
+                state
+            ).state
+        if state["pending_source_commit"] is not None:
+            state = self._reconcile_source_commit(state).state
+        if state["pending_integration"] is not None:
+            self._integrator().recover()
+            state = store.load()
+        status = RunStatus(state["status"])
+        if status not in STATIC_RUN_STATUSES:
+            previous = status.value
+
+            def pause_after_exit(
+                current: dict[str, object],
+                refs: Mapping[str, ArtifactRef],
+            ) -> None:
+                del refs
+                if current["status"] != previous:
+                    raise StateConflictError(
+                        "run status changed during recovery"
+                    )
+                current["resume_status"] = previous
+                current["status"] = "PAUSED"
+                current["controller"] = None
+                current["last_error"] = {
+                    "code": "CONTROLLER_EXIT_RECOVERED",
+                    "message": (
+                        "the prior foreground Controller exited"
+                    ),
+                    "retryable": True,
+                }
+                current["updated_at"] = self._now()
+
+            state = store.transact(
+                state["revision"],
+                {},
+                pause_after_exit,
+            )
+        return state
+
+    def _restore_and_register_controller(
+        self,
+        state: dict[str, object],
+    ) -> dict[str, object]:
+        resume_status = state.get("resume_status")
+        if resume_status not in {
+            "CREATED",
+            "PLANNING",
+            "EXECUTING",
+            "GLOBAL_VERIFYING",
+            "EVALUATING",
+            "REPAIRING",
+        }:
+            raise StateConflictError(
+                "paused run has no resumable lifecycle status"
+            )
+        pid = os.getpid()
+        identity = process_start_identity(pid)
+        group = os.getpgrp()
+        token = f"CONTROLLER-{uuid.uuid4()}"
+        store = self._active_store()
+
+        def restore(
+            current: dict[str, object],
+            refs: Mapping[str, ArtifactRef],
+        ) -> None:
+            del refs
+            if (
+                current["status"] not in {"PAUSED", "STOPPED"}
+                or current["resume_status"] != resume_status
+            ):
+                raise StateConflictError(
+                    "run changed before resume registration"
+                )
+            current["status"] = resume_status
+            current["resume_status"] = None
+            current["controller"] = {
+                "pid": pid,
+                "process_start_identity": identity,
+                "process_group": group,
+                "controller_token": token,
+            }
+            current["last_error"] = None
+            current["updated_at"] = self._now()
+
+        return store.transact(
+            state["revision"],
+            {},
+            restore,
+        )
+
+    def _recover_dispatches(
+        self,
+        *,
+        start_unlaunched: bool,
+    ) -> dict[str, object]:
+        store = self._active_store()
+        state = store.load()
+        for token in tuple(state["pending_dispatches"]):
+            state = store.load()
+            pending = state["pending_dispatches"].get(token)
+            if pending is None:
+                continue
+            invocation = self._invocation_from_pending(
+                state,
+                pending,
+            )
+            self._invocations[token] = invocation
+            if pending["provider_handle"] is not None:
+                handle_from_pending(
+                    pending,
+                    store.root,
+                    self.target,
+                )
+                continue
+            request = request_from_pending(
+                pending,
+                store.root,
+                self.target,
+            )
+            launch_body = self._optional_provider_body(
+                pending["launch_path"]
+            )
+            if launch_body is not None:
+                handle = self._handle_from_launch(
+                    request,
+                    launch_body,
+                )
+                self._bind_recovered_handle(
+                    state,
+                    pending,
+                    handle,
+                    launch_body,
+                )
+                continue
+            if not start_unlaunched:
+                continue
+            handle = self._provider().start(request)
+            launch_body = self._required_provider_body(
+                pending["launch_path"]
+            )
+            self._bind_recovered_handle(
+                state,
+                pending,
+                handle,
+                launch_body,
+            )
+        return store.load()
+
+    def _bind_recovered_handle(
+        self,
+        state: dict[str, object],
+        pending: dict[str, object],
+        handle: ProviderHandle,
+        launch_body: bytes,
+    ) -> None:
+        launch_path = pending["launch_path"]
+        token = pending["attempt_token"]
+
+        def bind(
+            current: dict[str, object],
+            refs: Mapping[str, ArtifactRef],
+        ) -> None:
+            bind_matching_handle(
+                current,
+                token,
+                handle,
+                refs[launch_path],
+            )
+
+        self._active_store().transact(
+            state["revision"],
+            {launch_path: launch_body},
+            bind,
+        )
+
+    def _invocation_from_pending(
+        self,
+        state: dict[str, object],
+        pending: dict[str, object],
+    ) -> RoleInvocation:
+        request = request_from_pending(
+            pending,
+            self._active_store().root,
+            self.target,
+        )
+        role = pending["role"]
+        if role == "worker":
+            task_id = pending["task_id"]
+            contract = self._task_contracts(state)[task_id]
+            authorized = contract.acceptance_checks
+            required = tuple(
+                command_id
+                for command_id
+                in self.config.required_command_ids
+                if command_id in authorized
+            )
+        else:
+            authorized = tuple(
+                command.id
+                for command in self.config.command_catalog
+            )
+            required = self.config.required_command_ids
+        provider_prefix = pending["provider_prefix"]
+        marker = "/providers/"
+        if marker not in provider_prefix:
+            raise ContractError(
+                "pending Provider prefix is invalid"
+            )
+        artifact_prefix = provider_prefix.rsplit(
+            marker,
+            1,
+        )[0]
+
+        def body(field: str) -> bytes:
+            reference = pending[field]
+            return self._read_ref(
+                ArtifactRef(
+                    reference["path"],
+                    reference["sha256"],
+                )
+            )
+
+        return RoleInvocation(
+            role=role,
+            task_id=pending["task_id"],
+            operation_id=pending["operation_id"],
+            attempt_no=pending["attempt_no"],
+            attempt_created_at=pending[
+                "attempt_created_at"
+            ],
+            attempt_token=pending["attempt_token"],
+            provider_retry_no=pending["provider_retry_no"],
+            expected_base=pending["expected_base"],
+            branch=pending["branch"],
+            worktree=pending["worktree"],
+            target_root=str(self.target),
+            run_root=str(self._active_store().root),
+            prompt_body=body("prompt"),
+            prompt_versions=tuple(
+                PromptRef(
+                    item["id"],
+                    item["version"],
+                    item["sha256"],
+                )
+                for item in pending["prompt_versions"]
+            ),
+            schema_body=body("schema"),
+            preflight_body=body("preflight"),
+            authorized_command_ids=tuple(authorized),
+            required_command_ids=tuple(required),
+            config_sha256=self._sha256(
+                frozen_config_bytes(self.config)
+            ),
+            codex_version=request.codex_version,
+            execution_policy_sha256=(
+                request.execution_policy_sha256
+            ),
+            sandbox=request.sandbox,
+            artifact_prefix=artifact_prefix,
+            timeout_seconds=request.timeout_seconds,
+        )
+
+    def _handle_from_launch(
+        self,
+        request: ProviderRequest,
+        body: bytes,
+    ) -> ProviderHandle:
+        raw = parse_json_object_bytes(body)
+        identity_fields = {
+            "adapter",
+            "attempt_token",
+            "pid",
+            "process_start_identity",
+            "process_group",
+            "child_pid",
+            "child_process_start_identity",
+            "child_process_group",
+            "codex_version",
+            "execution_policy_sha256",
+        }
+        if set(raw) != identity_fields:
+            raise ContractError(
+                "Provider launch receipt fields are invalid"
+            )
+        if (
+            raw["attempt_token"] != request.attempt_token
+            or raw["codex_version"] != request.codex_version
+            or raw["execution_policy_sha256"]
+            != request.execution_policy_sha256
+        ):
+            raise ContractError(
+                "Provider launch receipt identity changed"
+            )
+        return ProviderHandle(
+            adapter=raw["adapter"],
+            attempt_token=raw["attempt_token"],
+            pid=raw["pid"],
+            process_start_identity=raw[
+                "process_start_identity"
+            ],
+            process_group=raw["process_group"],
+            child_pid=raw["child_pid"],
+            child_process_start_identity=raw[
+                "child_process_start_identity"
+            ],
+            child_process_group=raw[
+                "child_process_group"
+            ],
+            codex_version=request.codex_version,
+            execution_policy_sha256=(
+                request.execution_policy_sha256
+            ),
+            launch_path=request.launch_path,
+            stdout_path=request.stdout_path,
+            stderr_path=request.stderr_path,
+            exit_path=request.exit_path,
+            result_path=request.result_path,
+        )
+
+    def _optional_provider_body(
+        self,
+        relative: str,
+    ) -> bytes | None:
+        path = self._active_store().root.joinpath(
+            *PurePosixPath(relative).parts
+        )
+        parent = open_absolute_directory_no_follow(path.parent)
+        try:
+            return read_optional_regular_at(
+                parent,
+                path.name,
+                max_bytes=MAX_ARTIFACT_BYTES,
+            )
+        finally:
+            os.close(parent)
+
+    def _required_provider_body(self, relative: str) -> bytes:
+        value = self._optional_provider_body(relative)
+        if value is None:
+            raise ContractError(
+                "Provider launch receipt is missing"
+            )
+        return value
+
+    def _consume_stop_request(
+        self,
+        state: dict[str, object],
+        *,
+        expected: StopRequest | None = None,
+    ) -> TickResult | None:
+        request = self._read_stop_request()
+        if request is None:
+            return None
+        if expected is not None and request != expected:
+            raise StateConflictError(
+                "durable stop request changed"
+            )
+        if request.run_id != state["run_id"]:
+            raise ContractError(
+                "stop request targets another run"
+            )
+        if request.observed_revision > state["revision"]:
+            raise ContractError(
+                "stop request observes a future revision"
+            )
+        for item in state["stop_receipts"]:
+            if item["nonce"] != request.nonce:
+                continue
+            self._read_ref(
+                ArtifactRef(
+                    item["receipt"]["path"],
+                    item["receipt"]["sha256"],
+                )
+            )
+            self._unlink_stop_request()
+            return TickResult(state, True)
+        controller = state.get("controller")
+        if (
+            not isinstance(controller, dict)
+            or controller.get("controller_token")
+            != request.controller_token
+        ):
+            updated = self._persist_stop_outcome(
+                state,
+                request,
+                outcome="IGNORED_STALE_CONTROLLER",
+                stopped=(),
+                forced=(),
+            )
+            self._unlink_stop_request()
+            return TickResult(updated, True)
+        self.dependencies.fault_hook(
+            "after_stop_request_before_worker_exit"
+        )
+        stopped: list[str] = []
+        forced: list[str] = []
+        for pending in state["pending_dispatches"].values():
+            if pending["provider_handle"] is None:
+                continue
+            handle = handle_from_pending(
+                pending,
+                self._active_store().root,
+                self.target,
+            )
+            result = self._provider().stop(handle, 1.0)
+            if result.stopped:
+                stopped.append(result.attempt_token)
+            if result.forced:
+                forced.append(result.attempt_token)
+        state = self._active_store().load()
+        updated = self._persist_stop_outcome(
+            state,
+            request,
+            outcome="STOPPED",
+            stopped=tuple(stopped),
+            forced=tuple(forced),
+        )
+        self._unlink_stop_request()
+        return TickResult(updated, True)
+
+    def _persist_stop_outcome(
+        self,
+        state: dict[str, object],
+        request: StopRequest,
+        *,
+        outcome: str,
+        stopped: tuple[str, ...],
+        forced: tuple[str, ...],
+    ) -> dict[str, object]:
+        completed_at = self._now()
+        receipt = StopReceipt(
+            request=request,
+            outcome=outcome,
+            stopped_tokens=stopped,
+            forced_tokens=forced,
+            completed_at=completed_at,
+        )
+        receipt_path = (
+            f"control/receipts/{request.nonce}.json"
+        )
+        artifacts: dict[str, bytes] = {
+            receipt_path: canonical_json_bytes(
+                receipt.as_dict()
+            )
+        }
+        attempt_paths: dict[str, str] = {}
+        if outcome == "STOPPED":
+            for token, pending in state[
+                "pending_dispatches"
+            ].items():
+                if pending["role"] == "worker":
+                    task_id = pending["task_id"]
+                    task = state["tasks"][task_id]
+                    path = (
+                        f"tasks/{task_id}/attempts/"
+                        f"{task['attempt_no']:03d}/attempt.json"
+                    )
+                    body = self._worker_attempt_body(
+                        state,
+                        task_id,
+                        status="CANCELLED",
+                        source_audit=None,
+                        verification=None,
+                        last_error={
+                            "code": "STOP_REQUESTED",
+                            "message": (
+                                "attempt cancelled by operator"
+                            ),
+                            "retryable": True,
+                        },
+                        pending=pending,
+                    )
+                else:
+                    path = (
+                        f"{role_attempt_prefix(pending['role'], pending['operation_id'], pending['attempt_no'])}/"
+                        "attempt.json"
+                    )
+                    body = self._attempt_manifest_body(
+                        pending,
+                        status="CANCELLED",
+                        completed_at=completed_at,
+                        last_error={
+                            "code": "STOP_REQUESTED",
+                            "message": (
+                                "attempt cancelled by operator"
+                            ),
+                            "retryable": True,
+                        },
+                    )
+                artifacts[path] = body
+                attempt_paths[token] = path
+        store = self._active_store()
+
+        def persist(
+            current: dict[str, object],
+            refs: Mapping[str, ArtifactRef],
+        ) -> None:
+            if any(
+                item["nonce"] == request.nonce
+                for item in current["stop_receipts"]
+            ):
+                return
+            if outcome == "STOPPED":
+                previous_status = current["status"]
+                for token, path in attempt_paths.items():
+                    pending = current[
+                        "pending_dispatches"
+                    ].get(token)
+                    if pending is None:
+                        raise StateConflictError(
+                            "stop target dispatch changed"
+                        )
+                    if pending["role"] == "worker":
+                        task = current["tasks"][
+                            pending["task_id"]
+                        ]
+                        task["attempts"].append(
+                            refs[path].as_dict()
+                        )
+                        task["active_attempt"] = None
+                        task["status"] = "READY"
+                        task["result"] = None
+                        task["source_commits"] = []
+                        task["verification"] = None
+                        task["last_error"] = {
+                            "code": "STOP_REQUESTED",
+                            "message": (
+                                "attempt cancelled by operator"
+                            ),
+                            "retryable": True,
+                        }
+                    else:
+                        role = pending["role"]
+                        current["role_attempts"][
+                            role
+                        ].append(refs[path].as_dict())
+                        runtime = current["role_runtime"][role]
+                        runtime["active_attempt_token"] = None
+                        runtime["last_error"] = {
+                            "code": "STOP_REQUESTED",
+                            "message": (
+                                "attempt cancelled by operator"
+                            ),
+                            "retryable": True,
+                        }
+                    del current["pending_dispatches"][token]
+                current["resume_status"] = previous_status
+                current["status"] = "STOPPED"
+                current["controller"] = None
+                current["last_error"] = {
+                    "code": "STOP_REQUESTED",
+                    "message": "run stopped by operator",
+                    "retryable": True,
+                }
+            current["stop_receipts"].append(
+                {
+                    "nonce": request.nonce,
+                    "receipt": refs[
+                        receipt_path
+                    ].as_dict(),
+                }
+            )
+            current["updated_at"] = completed_at
+
+        return store.transact(
+            state["revision"],
+            artifacts,
+            persist,
+        )
+
+    def _read_stop_request(self) -> StopRequest | None:
+        control_fd = self._control_directory(
+            self._active_store(),
+            create=False,
+        )
+        if control_fd is None:
+            return None
+        try:
+            body = read_optional_regular_at(
+                control_fd,
+                "stop.request",
+                max_bytes=64 * 1024,
+            )
+        finally:
+            os.close(control_fd)
+        return (
+            None
+            if body is None
+            else self._parse_stop_request(body)
+        )
+
+    @staticmethod
+    def _parse_stop_request(body: bytes) -> StopRequest:
+        raw = parse_json_object_bytes(body)
+        if set(raw) != {
+            "run_id",
+            "observed_revision",
+            "controller_token",
+            "requested_at",
+            "nonce",
+        }:
+            raise ContractError(
+                "stop request fields are invalid"
+            )
+        if (
+            not isinstance(raw["run_id"], str)
+            or type(raw["observed_revision"]) is not int
+            or raw["observed_revision"] < 0
+            or not isinstance(raw["controller_token"], str)
+            or not isinstance(raw["requested_at"], str)
+            or not isinstance(raw["nonce"], str)
+            or not raw["nonce"].startswith("STOP-")
+        ):
+            raise ContractError("stop request values are invalid")
+        try:
+            datetime.fromisoformat(raw["requested_at"])
+        except ValueError as error:
+            raise ContractError(
+                "stop request timestamp is invalid"
+            ) from error
+        return StopRequest(
+            run_id=raw["run_id"],
+            observed_revision=raw["observed_revision"],
+            controller_token=raw["controller_token"],
+            requested_at=raw["requested_at"],
+            nonce=raw["nonce"],
+        )
+
+    @staticmethod
+    def _control_directory(
+        store: StateStore,
+        *,
+        create: bool,
+    ) -> int | None:
+        root_fd = open_absolute_directory_no_follow(
+            store.root
+        )
+        try:
+            try:
+                return os.open(
+                    "control",
+                    os.O_RDONLY
+                    | os.O_DIRECTORY
+                    | os.O_NOFOLLOW,
+                    dir_fd=root_fd,
+                )
+            except FileNotFoundError:
+                if not create:
+                    return None
+                os.mkdir("control", 0o700, dir_fd=root_fd)
+                os.fsync(root_fd)
+                return os.open(
+                    "control",
+                    os.O_RDONLY
+                    | os.O_DIRECTORY
+                    | os.O_NOFOLLOW,
+                    dir_fd=root_fd,
+                )
+        finally:
+            os.close(root_fd)
+
+    def _unlink_stop_request(self) -> None:
+        control_fd = self._control_directory(
+            self._active_store(),
+            create=False,
+        )
+        if control_fd is None:
+            return
+        try:
+            try:
+                os.unlink(
+                    "stop.request",
+                    dir_fd=control_fd,
+                )
+            except FileNotFoundError:
+                pass
+            os.fsync(control_fd)
+        finally:
+            os.close(control_fd)
 
     def _drive_locked(
         self,
@@ -195,6 +1034,9 @@ class Controller:
         return state
 
     def tick(self, state: dict[str, object]) -> TickResult:
+        stop = self._consume_stop_request(state)
+        if stop is not None:
+            return stop
         handlers = {
             RunStatus.CREATED: self._start_initial_planner,
             RunStatus.PLANNING: self._poll_planner,
@@ -910,13 +1752,35 @@ class Controller:
     ) -> TickResult:
         marker = state["pending_source_commit"]
         task_id = marker["task_id"]
-        prepared, worktree = self._prepare_active_source(
+        task = state["tasks"][task_id]
+        active = task["active_attempt"]
+        worktree = TaskWorktree(
+            self.target.joinpath(
+                *PurePosixPath(active["worktree"]).parts
+            ).resolve(),
+            active["branch"],
+            active["task_base_sha"],
+        )
+        audit_ref = ArtifactRef(
+            marker["source_audit"]["path"],
+            marker["source_audit"]["sha256"],
+        )
+        audit_body = self._read_ref(audit_ref)
+        audit = self._source_audit_for_active(
             state,
             task_id,
         )
+        prepared = PreparedSourceCommit(
+            tree_oid=marker["tree_oid"],
+            candidate_commit=marker["candidate_commit"],
+            source_audit=audit,
+            source_audit_body=audit_body,
+        )
         if (
-            prepared.candidate_commit != marker["candidate_commit"]
-            or prepared.tree_oid != marker["tree_oid"]
+            prepared.source_audit.source_head
+            != marker["candidate_commit"]
+            or prepared.source_audit.task_base_sha
+            != marker["expected_base"]
         ):
             return self._pause(
                 state,

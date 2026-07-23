@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import Enum
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from vibe.models import ContractError, ProviderStatus
 from vibe.prompt_registry import parse_single_json_object
+from vibe.state_store import (
+    canonical_json_bytes,
+    open_absolute_regular_no_follow,
+    read_bounded,
+)
 
 
 class ProviderConfigurationError(ContractError):
@@ -278,6 +284,171 @@ class ProviderAdapter(Protocol):
 
     def result(self, handle: ProviderHandle) -> ProviderResult:
         raise NotImplementedError
+
+
+def request_from_pending(
+    pending: object,
+    trusted_run_root: Path,
+    trusted_target_root: Path,
+) -> ProviderRequest:
+    if not isinstance(pending, dict):
+        raise ContractError("pending dispatch must be an object")
+    run_root = trusted_run_root.resolve()
+    target_root = trusted_target_root.resolve()
+
+    def relative(field: str) -> PurePosixPath:
+        value = pending.get(field)
+        if not isinstance(value, str):
+            raise ContractError(
+                f"pending dispatch {field} is invalid"
+            )
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or "." in path.parts
+            or ".." in path.parts
+            or value != path.as_posix()
+        ):
+            raise ContractError(
+                f"pending dispatch {field} is unsafe"
+            )
+        return path
+
+    def artifact_path(field: str) -> Path:
+        value = pending.get(field)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"path", "sha256"}
+            or not isinstance(value.get("path"), str)
+        ):
+            raise ContractError(
+                f"pending dispatch {field} ArtifactRef is invalid"
+            )
+        path = PurePosixPath(value["path"])
+        if (
+            path.is_absolute()
+            or not path.parts
+            or "." in path.parts
+            or ".." in path.parts
+        ):
+            raise ContractError(
+                f"pending dispatch {field} path is unsafe"
+            )
+        return run_root.joinpath(*path.parts)
+
+    request_path = artifact_path("request")
+    descriptor = open_absolute_regular_no_follow(request_path)
+    try:
+        body = read_bounded(
+            descriptor,
+            max_bytes=4 * 1024 * 1024,
+        )
+    finally:
+        os.close(descriptor)
+    raw = parse_single_json_object(body)
+    expected_fields = set(ProviderRequest.__dataclass_fields__)
+    if set(raw) != expected_fields:
+        raise ContractError(
+            "persisted Provider request fields are invalid"
+        )
+    try:
+        request = ProviderRequest(**raw)
+    except TypeError as error:
+        raise ContractError(
+            "persisted Provider request is invalid"
+        ) from error
+    expected_paths = {
+        "request_path": request_path,
+        "prompt_path": artifact_path("prompt"),
+        "schema_path": artifact_path("schema"),
+        "cwd": target_root.joinpath(
+            *relative("worktree").parts
+        ),
+        "launch_path": run_root.joinpath(
+            *relative("launch_path").parts
+        ),
+        "stdout_path": run_root.joinpath(
+            *relative("stdout_path").parts
+        ),
+        "stderr_path": run_root.joinpath(
+            *relative("stderr_path").parts
+        ),
+        "exit_path": run_root.joinpath(
+            *relative("exit_path").parts
+        ),
+        "result_path": run_root.joinpath(
+            *relative("result_path").parts
+        ),
+    }
+    for field, expected in expected_paths.items():
+        if getattr(request, field) != str(expected):
+            raise ContractError(
+                f"persisted Provider request {field} is not trusted"
+            )
+    scalar_fields = {
+        "attempt_token": pending.get("attempt_token"),
+        "role": pending.get("role"),
+    }
+    for field, expected in scalar_fields.items():
+        if getattr(request, field) != expected:
+            raise ContractError(
+                f"persisted Provider request {field} changed"
+            )
+    if body != canonical_json_bytes(request.as_dict()):
+        raise ContractError(
+            "persisted Provider request is not canonical"
+        )
+    return request
+
+
+def handle_from_pending(
+    pending: object,
+    trusted_run_root: Path,
+    trusted_target_root: Path,
+) -> ProviderHandle:
+    request = request_from_pending(
+        pending,
+        trusted_run_root,
+        trusted_target_root,
+    )
+    assert isinstance(pending, dict)
+    identity = pending.get("provider_handle")
+    if not isinstance(identity, dict):
+        raise ContractError(
+            "pending dispatch has no Provider handle"
+        )
+    expected_identity_fields = {
+        "adapter",
+        "attempt_token",
+        "pid",
+        "process_start_identity",
+        "process_group",
+        "child_pid",
+        "child_process_start_identity",
+        "child_process_group",
+    }
+    if set(identity) != expected_identity_fields:
+        raise ContractError(
+            "pending Provider handle fields are invalid"
+        )
+    try:
+        return ProviderHandle(
+            **identity,
+            codex_version=request.codex_version,
+            execution_policy_sha256=(
+                request.execution_policy_sha256
+            ),
+            launch_path=request.launch_path,
+            stdout_path=request.stdout_path,
+            stderr_path=request.stderr_path,
+            exit_path=request.exit_path,
+            result_path=request.result_path,
+        )
+    except TypeError as error:
+        raise ContractError(
+            "pending Provider handle is invalid"
+        ) from error
 
 
 def classify_provider_failure(

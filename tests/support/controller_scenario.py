@@ -104,6 +104,16 @@ class ControllerScenario:
         _git(target, "commit", "-m", "base")
         provider = ScenarioProvider(list(spec.scripts))
         worktrees = WorktreeManager(target)
+        remaining_faults = set(spec.fault_points)
+        fault_lock = threading.Lock()
+
+        def fault_hook(point: str) -> None:
+            with fault_lock:
+                if point not in remaining_faults:
+                    return
+                remaining_faults.remove(point)
+            raise RuntimeError(point)
+
         bootstrap_dependencies = ControllerDependencies(
             store_factory=lambda root, run_id: StateStore.for_run(
                 root,
@@ -118,7 +128,7 @@ class ControllerScenario:
             integrator=None,
             clock=Controller.utc_now,
             sleep=time.sleep,
-            fault_hook=lambda point: _fault(spec.fault_points, point),
+            fault_hook=fault_hook,
         )
         bootstrap = Controller(
             target,
@@ -161,10 +171,7 @@ class ControllerScenario:
             store=store,
             verification=gate,
             config=spec.config,
-            fault_hook=lambda point: _fault(
-                spec.fault_points,
-                point,
-            ),
+            fault_hook=fault_hook,
         )
         errors: queue.Queue[BaseException] = queue.Queue()
         placeholder = cls(
@@ -195,7 +202,7 @@ class ControllerScenario:
             ),
             clock=Controller.utc_now,
             sleep=lambda seconds: time.sleep(min(seconds, 0.01)),
-            fault_hook=bootstrap_dependencies.fault_hook,
+            fault_hook=fault_hook,
         )
         controller = Controller(target, spec.config, dependencies)
         placeholder.dependencies = dependencies
@@ -257,6 +264,30 @@ class ControllerScenario:
             self.dependencies,
         )
 
+    def assert_thread_error(
+        self,
+        error_type: type[BaseException],
+        text: str,
+    ) -> BaseException:
+        if self._thread is None:
+            raise AssertionError("Controller thread was not started")
+        self._thread.join(timeout=20)
+        if self._thread.is_alive():
+            raise AssertionError("Controller thread leaked")
+        try:
+            error = self.thread_errors.get_nowait()
+        except queue.Empty as missing:
+            raise AssertionError(
+                "Controller thread did not report an error"
+            ) from missing
+        if not isinstance(error, error_type) or text not in str(error):
+            raise AssertionError(
+                f"unexpected Controller thread error: {error!r}"
+            )
+        if not self.thread_errors.empty():
+            raise AssertionError("multiple Controller thread errors")
+        return error
+
     def close(self) -> None:
         self.provider.join_background(timeout=1)
         if self._thread is not None:
@@ -288,8 +319,3 @@ def _git(target: Path, *arguments: str) -> str:
             f"git {' '.join(arguments)} failed: {result.stderr}"
         )
     return result.stdout.strip()
-
-
-def _fault(points: frozenset[str], point: str) -> None:
-    if point in points:
-        raise RuntimeError(point)
