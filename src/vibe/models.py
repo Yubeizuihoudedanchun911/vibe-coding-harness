@@ -15,7 +15,9 @@ OID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"RUN-\d{8}-\d{3}\Z")
 TASK_ID_RE = re.compile(r"TASK-\d{3}\Z")
 ACCEPTANCE_ID_RE = re.compile(r"AC-\d{3}\Z")
-OPERATION_ID_RE = re.compile(r"[A-Z][A-Z0-9_-]{0,127}\Z")
+OPERATION_ID_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z"
+)
 TOKEN_RE = re.compile(r"[A-Z][A-Z0-9_-]{0,191}\Z")
 
 
