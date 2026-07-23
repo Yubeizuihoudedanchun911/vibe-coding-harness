@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe.local/schemas/worker-result-v1.schema.json",
+  "title": "Vibe worker result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "attempt_no",
+    "attempt_token",
+    "status",
+    "task_base_sha",
+    "changed_paths",
+    "checks",
+    "residual_risks",
+    "blocker"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {
+      "type": "string",
+      "pattern": "^TASK-[0-9]{3}$"
+    },
+    "attempt_no": {"type": "integer", "minimum": 1},
+    "attempt_token": {
+      "type": "string",
+      "pattern": "^ATTEMPT-[A-Za-z0-9-]+$"
+    },
+    "status": {"enum": ["COMPLETED", "BLOCKED"]},
+    "task_base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "changed_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command_id", "exit_code", "summary"],
+        "properties": {
+          "command_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "exit_code": {"type": "integer"},
+          "summary": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "residual_risks": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "blocker": {"type": ["string", "null"]}
+  }
+}
