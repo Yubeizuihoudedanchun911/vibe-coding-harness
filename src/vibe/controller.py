@@ -689,9 +689,7 @@ class Controller:
             preflight_body=body("preflight"),
             authorized_command_ids=tuple(authorized),
             required_command_ids=tuple(required),
-            config_sha256=self._sha256(
-                frozen_config_bytes(self.config)
-            ),
+            config_sha256=state["config"]["sha256"],
             codex_version=request.codex_version,
             execution_policy_sha256=(
                 request.execution_policy_sha256

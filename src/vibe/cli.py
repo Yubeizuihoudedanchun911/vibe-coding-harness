@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import json
 import os
 import signal
@@ -15,7 +14,6 @@ from pathlib import Path, PurePosixPath
 
 from vibe import __version__
 from vibe.config import (
-    frozen_config_bytes,
     load_run_config,
     parse_frozen_config,
 )
@@ -192,13 +190,9 @@ class _ControllerFacade:
         provider = provider_adapter(self.config.provider_name)
         registry = PromptRegistry.default()
         audit = GitReadOnlyAudit(self.worktrees)
-        config_sha = (
-            "sha256:"
-            + hashlib.sha256(
-                frozen_config_bytes(self.config)
-            ).hexdigest()
-        )
-        baseline = store.load()["repository"]["base_sha"]
+        state = store.load()
+        config_sha = state["config"]["sha256"]
+        baseline = state["repository"]["base_sha"]
         common = {
             "registry": registry,
             "provider": provider,

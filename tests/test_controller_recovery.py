@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -114,9 +115,25 @@ class ControllerRecoveryTests(unittest.TestCase):
                 )
                 + "\n"
             ).encode("utf-8")
-            with mock.patch(
-                "vibe.controller.frozen_config_bytes",
-                return_value=old_config_body,
+            original_config_sha256 = (
+                "sha256:"
+                + hashlib.sha256(old_config_body).hexdigest()
+            )
+            normalized_config_sha256 = (
+                "sha256:"
+                + hashlib.sha256(
+                    frozen_config_bytes(controller_config())
+                ).hexdigest()
+            )
+            with (
+                mock.patch(
+                    "vibe.controller.frozen_config_bytes",
+                    return_value=old_config_body,
+                ),
+                mock.patch(
+                    "tests.support.controller_scenario.frozen_config_bytes",
+                    return_value=old_config_body,
+                ),
             ):
                 scenario = self.build(
                     root,
@@ -147,10 +164,38 @@ class ControllerRecoveryTests(unittest.TestCase):
                     "vibe.cli.provider_adapter",
                     return_value=scenario.provider,
                 ):
-                    state = controller_for_target(
+                    facade = controller_for_target(
                         scenario.target,
                         run_id=scenario.run_id,
-                    ).resume(scenario.run_id)
+                    )
+                    runtime = facade._runtime(scenario.run_id)
+                    for runner in (
+                        runtime.dependencies.planner,
+                        runtime.dependencies.worker,
+                        runtime.dependencies.evaluator,
+                    ):
+                        self.assertEqual(
+                            runner.config_sha256,
+                            original_config_sha256,
+                        )
+                    crashed_state = scenario.store.load()
+                    pending = next(
+                        iter(
+                            crashed_state[
+                                "pending_dispatches"
+                            ].values()
+                        )
+                    )
+                    runtime._store = scenario.store
+                    rebuilt = runtime._invocation_from_pending(
+                        crashed_state,
+                        pending,
+                    )
+                    self.assertEqual(
+                        rebuilt.config_sha256,
+                        original_config_sha256,
+                    )
+                    state = runtime.resume(scenario.run_id)
                 persisted = json.loads(
                     (
                         scenario.store.root
@@ -201,6 +246,29 @@ class ControllerRecoveryTests(unittest.TestCase):
                                 for reference in prompt_refs
                             },
                             {1},
+                        )
+                self.assertEqual(
+                    {
+                        request.role
+                        for request in scenario.provider.requests
+                    },
+                    {"planner", "worker", "evaluator"},
+                )
+                for request in scenario.provider.requests:
+                    prompt = Path(request.prompt_path).read_text(
+                        encoding="utf-8",
+                    )
+                    with self.subTest(
+                        role=request.role,
+                        digest="config",
+                    ):
+                        self.assertIn(
+                            original_config_sha256,
+                            prompt,
+                        )
+                        self.assertNotIn(
+                            normalized_config_sha256,
+                            prompt,
                         )
             finally:
                 scenario.close()
