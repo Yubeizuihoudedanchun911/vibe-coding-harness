@@ -100,10 +100,6 @@ class WorkerRunner:
         else:
             task_contract["work_kind"] = task.work_kind
             task_contract["domain"] = task.domain
-        authorized_commands = resolve_command_ids(
-            self.config,
-            task.acceptance_checks,
-        )
         required_command_ids = tuple(
             command_id
             for command_id in self.config.required_command_ids
@@ -113,25 +109,35 @@ class WorkerRunner:
             f"refs/heads/vibe/{run_id}/"
             f"{task.id}-a{attempt_no}"
         )
+        execution_context: dict[str, object] = {
+            "operation_id": operation_id,
+            "attempt_no": attempt_no,
+            "attempt_token": attempt_token,
+            "task_base_sha": task_base_sha,
+            "branch": branch,
+            "worktree": relative_worktree,
+            "config_sha256": self.config_sha256,
+        }
+        if self.config.contract_profile == "legacy-v1":
+            execution_context["authorized_command_ids"] = list(
+                task.acceptance_checks
+            )
+        else:
+            authorized_commands = resolve_command_ids(
+                self.config,
+                task.acceptance_checks,
+            )
+            execution_context["authorized_commands"] = [
+                command.as_dict()
+                for command in authorized_commands
+            ]
+            execution_context["required_command_ids"] = list(
+                required_command_ids
+            )
         context = {
             "repository_instructions": repository_instructions,
             "task_contract": task_contract,
-            "execution": {
-                "operation_id": operation_id,
-                "attempt_no": attempt_no,
-                "attempt_token": attempt_token,
-                "task_base_sha": task_base_sha,
-                "branch": branch,
-                "worktree": relative_worktree,
-                "authorized_commands": [
-                    command.as_dict()
-                    for command in authorized_commands
-                ],
-                "required_command_ids": list(
-                    required_command_ids
-                ),
-                "config_sha256": self.config_sha256,
-            },
+            "execution": execution_context,
             "previous_failure": previous_failure,
         }
         rendered = self.registry.compose_worker(

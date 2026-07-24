@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -579,9 +580,38 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertIn('"timeout_seconds":120', text)
         self.assertNotIn('"id":"unit"', text)
+        self.assertIn('"required_command_ids":[]', text)
+        self.assertNotIn('"authorized_command_ids"', text)
         self.assertEqual(
             invocation.authorized_command_ids,
             ("lint",),
+        )
+
+    def test_legacy_worker_prepare_preserves_dynamic_prompt_digest(
+        self,
+    ) -> None:
+        invocation = self.worker.prepare(
+            run_id=self.run_id,
+            task=self.task,
+            operation_id="WORK-TASK-001-A1",
+            attempt_no=1,
+            attempt_created_at="2026-07-23T10:00:00.123456+00:00",
+            attempt_token="ATTEMPT-WORKER-LEGACY",
+            worktree=self.worktree,
+            task_base_sha="a" * 40,
+            previous_failure=None,
+            artifact_prefix="tasks/TASK-001/attempts/001",
+        )
+        text = invocation.prompt_body.decode("utf-8")
+        self.assertIn(
+            '"authorized_command_ids":["unit"]',
+            text,
+        )
+        self.assertNotIn('"authorized_commands"', text)
+        self.assertNotIn('"required_command_ids"', text)
+        self.assertEqual(
+            hashlib.sha256(invocation.prompt_body).hexdigest(),
+            "0ec3e71fd55f3eabf32afdae83c90319368d5283cf77ea881736e3274197f249",
         )
 
     def test_planner_v2_rejects_non_string_work_kind_as_contract_error(
