@@ -5,7 +5,9 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from unittest import mock
 
 from tests.support.controller_scenario import (
     ControllerScenario,
@@ -19,8 +21,9 @@ from tests.test_controller_fake_provider import (
     _single_task_plan,
     _worker_result,
 )
-from vibe.config import frozen_config_bytes, parse_frozen_config
-from vibe.models import FrozenRunConfig
+from vibe.cli import controller_for_target
+from vibe.config import frozen_config_bytes
+from vibe.providers.base import ProviderRequest
 
 
 DISPATCH_CRASH_POINTS = (
@@ -44,14 +47,14 @@ class ControllerRecoveryTests(unittest.TestCase):
         fault_point: str | None = None,
         release: threading.Event | None = None,
         resume_worker: bool = False,
-        config: FrozenRunConfig | None = None,
+        worker_on_start: Callable[[ProviderRequest], None] | None = None,
     ) -> ControllerScenario:
         scripts = [
             ProviderScript("planner", _single_task_plan()),
             ProviderScript(
                 "worker",
                 _worker_result,
-                on_start=_edit_worker,
+                on_start=worker_on_start or _edit_worker,
                 release=release,
             ),
         ]
@@ -70,7 +73,7 @@ class ControllerRecoveryTests(unittest.TestCase):
             root,
             ScenarioSpec(
                 goal="Create a recoverable file",
-                config=config or controller_config(),
+                config=controller_config(),
                 scripts=tuple(scripts),
                 fault_points=(
                     frozenset({fault_point})
@@ -85,36 +88,69 @@ class ControllerRecoveryTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            old_config_path = root / "config.json"
+            scenario_box: dict[str, ControllerScenario] = {}
+            worker_prompt_refs: list[dict[str, object]] = []
+
+            def edit_worker_and_capture_prompt_refs(
+                request: ProviderRequest,
+            ) -> None:
+                _edit_worker(request)
+                pending = scenario_box["scenario"].store.load()[
+                    "pending_dispatches"
+                ][request.attempt_token]
+                worker_prompt_refs.extend(
+                    pending["prompt_versions"]
+                )
+
             old_config = json.loads(
                 frozen_config_bytes(controller_config())
             )
             del old_config["contract_profile"]
-            old_config_path.write_text(
-                json.dumps(old_config),
-                encoding="utf-8",
-            )
-            recovered_config = parse_frozen_config(
-                json.loads(
-                    old_config_path.read_text(encoding="utf-8")
+            old_config_body = (
+                json.dumps(
+                    old_config,
+                    sort_keys=True,
+                    separators=(",", ":"),
                 )
-            )
-            scenario = self.build(
-                root / "scenario",
-                fault_point=(
-                    "after_provider_start_before_handle_binding"
-                ),
-                config=recovered_config,
-            )
+                + "\n"
+            ).encode("utf-8")
+            with mock.patch(
+                "vibe.controller.frozen_config_bytes",
+                return_value=old_config_body,
+            ):
+                scenario = self.build(
+                    root,
+                    fault_point=(
+                        "after_provider_start_before_handle_binding"
+                    ),
+                    worker_on_start=(
+                        edit_worker_and_capture_prompt_refs
+                    ),
+                )
+            scenario_box["scenario"] = scenario
             try:
+                persisted_config = json.loads(
+                    (
+                        scenario.store.root / "config.json"
+                    ).read_bytes()
+                )
+                self.assertNotIn(
+                    "contract_profile",
+                    persisted_config,
+                )
                 with self.assertRaisesRegex(
                     RuntimeError,
                     "after_provider_start_before_handle_binding",
                 ):
                     scenario.controller.execute(scenario.run_id)
-                state = scenario.new_controller().resume(
-                    scenario.run_id
-                )
+                with mock.patch(
+                    "vibe.cli.provider_adapter",
+                    return_value=scenario.provider,
+                ):
+                    state = controller_for_target(
+                        scenario.target,
+                        run_id=scenario.run_id,
+                    ).resume(scenario.run_id)
                 persisted = json.loads(
                     (
                         scenario.store.root
@@ -124,17 +160,13 @@ class ControllerRecoveryTests(unittest.TestCase):
                 task = persisted["tasks"][0]
                 self.assertEqual(state["status"], "SUCCEEDED")
                 self.assertEqual(
-                    recovered_config.contract_profile,
-                    "legacy-v1",
-                )
-                self.assertEqual(
                     task["worker_type"],
                     "implementation",
                 )
                 self.assertNotIn("work_kind", task)
                 self.assertNotIn("domain", task)
 
-                prompt_refs = []
+                planner_prompt_refs = []
                 for reference in state["role_attempts"]["planner"]:
                     manifest = json.loads(
                         (
@@ -142,18 +174,10 @@ class ControllerRecoveryTests(unittest.TestCase):
                             / reference["path"]
                         ).read_bytes()
                     )
-                    prompt_refs.extend(manifest["prompt_versions"])
-                for task_state in state["tasks"].values():
-                    for reference in task_state["attempts"]:
-                        manifest = json.loads(
-                            (
-                                scenario.store.root
-                                / reference["path"]
-                            ).read_bytes()
-                        )
-                        prompt_refs.extend(
-                            manifest["prompt_versions"]
-                        )
+                    planner_prompt_refs.extend(
+                        manifest["prompt_versions"]
+                    )
+                evaluator_prompt_refs = []
                 for reference in state["role_attempts"]["evaluator"]:
                     manifest = json.loads(
                         (
@@ -161,12 +185,23 @@ class ControllerRecoveryTests(unittest.TestCase):
                             / reference["path"]
                         ).read_bytes()
                     )
-                    prompt_refs.extend(manifest["prompt_versions"])
-                self.assertTrue(prompt_refs)
-                self.assertEqual(
-                    {reference["version"] for reference in prompt_refs},
-                    {1},
-                )
+                    evaluator_prompt_refs.extend(
+                        manifest["prompt_versions"]
+                    )
+                for role, prompt_refs in (
+                    ("planner", planner_prompt_refs),
+                    ("worker", worker_prompt_refs),
+                    ("evaluator", evaluator_prompt_refs),
+                ):
+                    with self.subTest(role=role):
+                        self.assertTrue(prompt_refs)
+                        self.assertEqual(
+                            {
+                                reference["version"]
+                                for reference in prompt_refs
+                            },
+                            {1},
+                        )
             finally:
                 scenario.close()
 
