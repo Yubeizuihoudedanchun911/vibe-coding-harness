@@ -97,7 +97,8 @@ class RunnerTests(unittest.TestCase):
         self.task = TaskContract(
             id="TASK-001",
             objective="Implement one bounded behavior",
-            worker_type="implementation",
+            work_kind="implementation",
+            domain="general",
             covers=("AC-001",),
             depends_on=(),
             path_scope=("src/vibe/example.py",),
@@ -117,6 +118,17 @@ class RunnerTests(unittest.TestCase):
         }
         self.planner = PlannerRunner(
             **common,
+            read_only_audit=self.audit,
+        )
+        self.domain_config = dataclasses.replace(
+            self.config,
+            contract_profile="domain-v2",
+        )
+        self.domain_planner = PlannerRunner(
+            **{
+                **common,
+                "config": self.domain_config,
+            },
             read_only_audit=self.audit,
         )
         self.worker = WorkerRunner(**common)
@@ -412,6 +424,70 @@ class RunnerTests(unittest.TestCase):
             self.provider.result(handle).body
         )
         self.assertEqual(parsed.tasks[0].id, "TASK-001")
+        self.assertEqual(
+            parsed.tasks[0].work_kind,
+            "implementation",
+        )
+        self.assertEqual(parsed.tasks[0].domain, "general")
+
+    def test_planner_v2_normalizes_work_kind_and_domain(self) -> None:
+        body = canonical_json_bytes(
+            {
+                "schema_version": 2,
+                "plan_version": 1,
+                "summary": "One client task",
+                "acceptance_criteria": [
+                    {
+                        "id": "AC-001",
+                        "description": "Client works",
+                    }
+                ],
+                "global_verification": ["unit"],
+                "tasks": [
+                    {
+                        "id": "TASK-001",
+                        "objective": "Implement offline recovery",
+                        "work_kind": "implementation",
+                        "domain": "client",
+                        "covers": ["AC-001"],
+                        "depends_on": [],
+                        "path_scope": ["client/"],
+                        "exclusive_resources": [],
+                        "acceptance_checks": ["unit"],
+                        "max_attempts": 3,
+                    }
+                ],
+            }
+        )
+        parsed = self.domain_planner.parse_result(body)
+        self.assertEqual(parsed.schema_version, 2)
+        self.assertEqual(
+            parsed.tasks[0].work_kind,
+            "implementation",
+        )
+        self.assertEqual(parsed.tasks[0].domain, "client")
+
+    def test_profile_rejects_the_other_plan_schema(self) -> None:
+        legacy_body = canonical_json_bytes(
+            {
+                "schema_version": 1,
+                "plan_version": 1,
+                "summary": "Wrong profile",
+                "acceptance_criteria": [
+                    {
+                        "id": "AC-001",
+                        "description": "Must fail",
+                    }
+                ],
+                "global_verification": ["unit"],
+                "tasks": [],
+            }
+        )
+        with self.assertRaisesRegex(
+            ContractError,
+            "contract profile",
+        ):
+            self.domain_planner.parse_result(legacy_body)
 
     def test_read_only_runner_audits_before_start_and_before_result(
         self,

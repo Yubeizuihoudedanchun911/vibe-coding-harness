@@ -7,9 +7,13 @@ from typing import Any, Sequence
 from vibe.models import (
     AcceptanceCriterion,
     ContractError,
+    DOMAINS,
+    DOMAIN_CONTRACT_PROFILE,
     FrozenRunConfig,
+    LEGACY_CONTRACT_PROFILE,
     PlanDocument,
     TaskContract,
+    WORK_KINDS,
 )
 from vibe.prompt_registry import (
     PromptRegistry,
@@ -27,17 +31,6 @@ from vibe.runners import (
 )
 from vibe.scheduler import Scheduler
 from vibe.state_store import canonical_json_bytes
-
-
-WORKER_TYPES = {
-    "implementation",
-    "testing",
-    "performance",
-    "code-quality",
-    "documentation",
-    "general",
-}
-
 
 class PlannerRunner:
     def __init__(
@@ -62,7 +55,7 @@ class PlannerRunner:
         self.config = config
         self.config_sha256 = config_sha256
         self.read_only_audit = read_only_audit
-        self.scheduler = scheduler or Scheduler(WORKER_TYPES)
+        self.scheduler = scheduler or Scheduler()
         self.prior_plans = tuple(prior_plans)
         self._audits: dict[
             str,
@@ -219,12 +212,18 @@ class PlannerRunner:
                 "tasks",
             },
         )
+        expected_schema = (
+            1
+            if self.config.contract_profile
+            == LEGACY_CONTRACT_PROFILE
+            else 2
+        )
         if (
             type(raw["schema_version"]) is not int
-            or raw["schema_version"] != 1
+            or raw["schema_version"] != expected_schema
         ):
             raise ContractError(
-                "plan schema_version must be integer 1"
+                "plan schema_version does not match contract profile"
             )
         plan_version = _positive_int(
             raw["plan_version"],
@@ -282,20 +281,25 @@ class PlannerRunner:
         tasks: list[TaskContract] = []
         task_ids: set[str] = set()
         for value in task_values:
+            common_fields = {
+                "id",
+                "objective",
+                "covers",
+                "depends_on",
+                "path_scope",
+                "exclusive_resources",
+                "acceptance_checks",
+                "max_attempts",
+            }
+            routing_fields = (
+                {"worker_type"}
+                if expected_schema == 1
+                else {"work_kind", "domain"}
+            )
             item = _exact_object(
                 value,
                 "task",
-                {
-                    "id",
-                    "objective",
-                    "worker_type",
-                    "covers",
-                    "depends_on",
-                    "path_scope",
-                    "exclusive_resources",
-                    "acceptance_checks",
-                    "max_attempts",
-                },
+                common_fields | routing_fields,
             )
             task_id = _canonical_id(
                 item["id"],
@@ -305,9 +309,16 @@ class PlannerRunner:
             if task_id in task_ids:
                 raise ContractError("task IDs must be unique")
             task_ids.add(task_id)
-            worker_type = item["worker_type"]
-            if worker_type not in WORKER_TYPES:
-                raise ContractError("task worker_type is invalid")
+            if expected_schema == 1:
+                work_kind = item["worker_type"]
+                domain = "general"
+            else:
+                work_kind = item["work_kind"]
+                domain = item["domain"]
+            if work_kind not in WORK_KINDS:
+                raise ContractError("task work_kind is invalid")
+            if domain not in DOMAINS:
+                raise ContractError("task domain is invalid")
             covers = _unique_strings(
                 item["covers"],
                 "task covers",
@@ -343,7 +354,8 @@ class PlannerRunner:
                         item["objective"],
                         "task objective",
                     ),
-                    worker_type=worker_type,
+                    work_kind=work_kind,
+                    domain=domain,
                     covers=covers,
                     depends_on=_unique_strings(
                         item["depends_on"],
@@ -363,7 +375,7 @@ class PlannerRunner:
                 )
             )
         document = PlanDocument(
-            schema_version=1,
+            schema_version=expected_schema,
             plan_version=plan_version,
             summary=summary,
             acceptance_criteria=tuple(criteria),
@@ -463,13 +475,16 @@ def _canonical_id(
 
 
 def _relative_path(value: str, field: str) -> str:
-    path = PurePosixPath(value)
+    directory = value.endswith("/")
+    raw = value[:-1] if directory else value
+    path = PurePosixPath(raw)
     if (
         path.is_absolute()
         or not path.parts
         or ".." in path.parts
         or "." in path.parts
-        or value != path.as_posix()
+        or value
+        != path.as_posix() + ("/" if directory else "")
     ):
         raise ContractError(f"{field} is invalid")
     return value

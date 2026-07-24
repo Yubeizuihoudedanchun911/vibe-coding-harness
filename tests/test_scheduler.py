@@ -39,7 +39,8 @@ class SchedulerTests(unittest.TestCase):
         return TaskContract(
             id=task_id,
             objective=f"Implement {task_id}",
-            worker_type="implementation",
+            work_kind="implementation",
+            domain="general",
             covers=("AC-001",),
             depends_on=depends_on,
             path_scope=path_scope,

@@ -209,7 +209,8 @@ class AcceptanceCriterion:
 class TaskContract:
     id: str
     objective: str
-    worker_type: str
+    work_kind: str
+    domain: str
     covers: tuple[str, ...]
     depends_on: tuple[str, ...]
     path_scope: tuple[str, ...]

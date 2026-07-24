@@ -47,6 +47,7 @@ class PromptRegistryTests(unittest.TestCase):
             },
             {
                 "plan-v1.schema.json",
+                "plan-v2.schema.json",
                 "worker-result-v1.schema.json",
                 "evaluation-v1.schema.json",
             },

@@ -10,7 +10,9 @@ from typing import Iterable, Sequence
 from vibe.config import resolve_command_ids
 from vibe.models import (
     ACCEPTANCE_ID_RE,
+    DOMAINS,
     TASK_ID_RE,
+    WORK_KINDS,
     ArtifactRef,
     ContractError,
     FrozenRunConfig,
@@ -19,17 +21,6 @@ from vibe.models import (
 )
 from vibe.worktrees import TaskWorktree
 
-
-DEFAULT_WORKER_TYPES = frozenset(
-    {
-        "implementation",
-        "testing",
-        "performance",
-        "code-quality",
-        "documentation",
-        "general",
-    }
-)
 RESOURCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
 
 
@@ -249,11 +240,21 @@ def effective_global_verification(
 class Scheduler:
     def __init__(
         self,
-        registered_worker_types: Iterable[str] = DEFAULT_WORKER_TYPES,
+        registered_work_kinds: Iterable[str] = WORK_KINDS,
+        registered_domains: Iterable[str] = DOMAINS,
     ) -> None:
-        self.registered_worker_types = frozenset(registered_worker_types)
-        if not self.registered_worker_types:
-            raise ContractError("registered Worker types cannot be empty")
+        self.registered_work_kinds = frozenset(
+            registered_work_kinds
+        )
+        self.registered_domains = frozenset(registered_domains)
+        if not self.registered_work_kinds:
+            raise ContractError(
+                "registered work kinds cannot be empty"
+            )
+        if not self.registered_domains:
+            raise ContractError(
+                "registered domains cannot be empty"
+            )
 
     def validate_plan(
         self,
@@ -262,7 +263,7 @@ class Scheduler:
         prior_plans: Sequence[PlanDocument],
     ) -> None:
         plans = tuple(sorted(prior_plans, key=lambda item: item.plan_version))
-        self._validate_versions(document, plans)
+        self._validate_versions(document, plans, config)
         self._validate_acceptance(document, plans)
         prior_tasks = tuple(
             task for plan in plans for task in plan.tasks
@@ -387,12 +388,25 @@ class Scheduler:
         self,
         document: PlanDocument,
         prior_plans: tuple[PlanDocument, ...],
+        config: FrozenRunConfig,
     ) -> None:
-        if document.schema_version != 1:
-            raise ContractError("plan schema_version must be 1")
+        expected_schema = (
+            1
+            if config.contract_profile == "legacy-v1"
+            else 2
+        )
+        if document.schema_version != expected_schema:
+            raise ContractError(
+                "Plan schema does not match frozen contract profile"
+            )
         for index, plan in enumerate(prior_plans, start=1):
-            if plan.schema_version != 1 or plan.plan_version != index:
-                raise ContractError("prior Plan versions are not contiguous")
+            if (
+                plan.schema_version != expected_schema
+                or plan.plan_version != index
+            ):
+                raise ContractError(
+                    "prior Plan schema/profile or version is invalid"
+                )
         expected = len(prior_plans) + 1
         if document.plan_version != expected:
             raise ContractError(
@@ -438,8 +452,14 @@ class Scheduler:
             raise ContractError(f"invalid task ID: {task.id}")
         if not task.objective.strip():
             raise ContractError(f"task {task.id} objective is empty")
-        if task.worker_type not in self.registered_worker_types:
-            raise ContractError(f"task {task.id} Worker type is not registered")
+        if task.work_kind not in self.registered_work_kinds:
+            raise ContractError(
+                f"task {task.id} work kind is not registered"
+            )
+        if task.domain not in self.registered_domains:
+            raise ContractError(
+                f"task {task.id} domain is not registered"
+            )
         if (
             not task.covers
             or len(set(task.covers)) != len(task.covers)

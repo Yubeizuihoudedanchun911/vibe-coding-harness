@@ -1302,7 +1302,12 @@ class Controller:
         }
         for task in document.tasks:
             artifacts[f"tasks/{task.id}/task.json"] = (
-                canonical_json_bytes(self._task_to_dict(task))
+                canonical_json_bytes(
+                    self._task_to_dict(
+                        task,
+                        document.schema_version,
+                    )
+                )
             )
         store = self._active_store()
 
@@ -1399,11 +1404,12 @@ class Controller:
                 "GLOBAL_VERIFYING",
             )
         contracts = self._task_contracts(state)
+        loaded_plans = self._load_plans(state)
         active_plan = PlanDocument(
-            schema_version=1,
+            schema_version=loaded_plans[0].schema_version,
             plan_version=state["plan_version"],
             summary="active task set",
-            acceptance_criteria=self._load_plans(state)[0].acceptance_criteria,
+            acceptance_criteria=loaded_plans[0].acceptance_criteria,
             global_verification=(),
             tasks=tuple(contracts.values()),
         )
@@ -3385,8 +3391,9 @@ class Controller:
 
     @staticmethod
     def _plan_from_dict(value: dict[str, object]) -> PlanDocument:
+        schema_version = value["schema_version"]
         return PlanDocument(
-            schema_version=value["schema_version"],
+            schema_version=schema_version,
             plan_version=value["plan_version"],
             summary=value["summary"],
             acceptance_criteria=tuple(
@@ -3398,23 +3405,44 @@ class Controller:
             ),
             global_verification=tuple(value["global_verification"]),
             tasks=tuple(
-                TaskContract(
-                    id=item["id"],
-                    objective=item["objective"],
-                    worker_type=item["worker_type"],
-                    covers=tuple(item["covers"]),
-                    depends_on=tuple(item["depends_on"]),
-                    path_scope=tuple(item["path_scope"]),
-                    exclusive_resources=tuple(
-                        item["exclusive_resources"]
-                    ),
-                    acceptance_checks=tuple(
-                        item["acceptance_checks"]
-                    ),
-                    max_attempts=item["max_attempts"],
+                Controller._task_from_dict(
+                    item,
+                    schema_version,
                 )
                 for item in value["tasks"]
             ),
+        )
+
+    @staticmethod
+    def _task_from_dict(
+        value: dict[str, object],
+        schema_version: int,
+    ) -> TaskContract:
+        if schema_version == 1:
+            work_kind = value["worker_type"]
+            domain = "general"
+        elif schema_version == 2:
+            work_kind = value["work_kind"]
+            domain = value["domain"]
+        else:
+            raise ContractError(
+                "unsupported persisted Plan schema"
+            )
+        return TaskContract(
+            id=value["id"],
+            objective=value["objective"],
+            work_kind=work_kind,
+            domain=domain,
+            covers=tuple(value["covers"]),
+            depends_on=tuple(value["depends_on"]),
+            path_scope=tuple(value["path_scope"]),
+            exclusive_resources=tuple(
+                value["exclusive_resources"]
+            ),
+            acceptance_checks=tuple(
+                value["acceptance_checks"]
+            ),
+            max_attempts=value["max_attempts"],
         )
 
     @staticmethod
@@ -3428,22 +3456,40 @@ class Controller:
             ],
             "global_verification": list(plan.global_verification),
             "tasks": [
-                Controller._task_to_dict(task)
+                Controller._task_to_dict(
+                    task,
+                    plan.schema_version,
+                )
                 for task in plan.tasks
             ],
         }
 
     @staticmethod
-    def _task_to_dict(task: TaskContract) -> dict[str, object]:
-        value = asdict(task)
-        for key in (
-            "covers",
-            "depends_on",
-            "path_scope",
-            "exclusive_resources",
-            "acceptance_checks",
-        ):
-            value[key] = list(value[key])
+    def _task_to_dict(
+        task: TaskContract,
+        schema_version: int,
+    ) -> dict[str, object]:
+        value: dict[str, object] = {
+            "id": task.id,
+            "objective": task.objective,
+            "covers": list(task.covers),
+            "depends_on": list(task.depends_on),
+            "path_scope": list(task.path_scope),
+            "exclusive_resources": list(
+                task.exclusive_resources
+            ),
+            "acceptance_checks": list(
+                task.acceptance_checks
+            ),
+            "max_attempts": task.max_attempts,
+        }
+        if schema_version == 1:
+            value["worker_type"] = task.work_kind
+        elif schema_version == 2:
+            value["work_kind"] = task.work_kind
+            value["domain"] = task.domain
+        else:
+            raise ContractError("unsupported Plan schema")
         return value
 
     def _evidence_catalog(

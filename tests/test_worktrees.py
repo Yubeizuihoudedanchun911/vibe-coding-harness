@@ -38,7 +38,8 @@ class WorktreeManagerTests(GitRepositoryFixture, unittest.TestCase):
         return TaskContract(
             id=task_id,
             objective="Edit scoped files",
-            worker_type="implementation",
+            work_kind="implementation",
+            domain="general",
             covers=("AC-001",),
             depends_on=(),
             path_scope=scope,

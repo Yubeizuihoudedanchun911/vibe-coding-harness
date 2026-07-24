@@ -83,7 +83,7 @@ class WorkerRunner:
         task_contract = {
             "id": task.id,
             "objective": task.objective,
-            "worker_type": task.worker_type,
+            "worker_type": task.work_kind,
             "covers": list(task.covers),
             "depends_on": list(task.depends_on),
             "path_scope": list(task.path_scope),
@@ -117,7 +117,7 @@ class WorkerRunner:
             "previous_failure": previous_failure,
         }
         rendered = self.registry.compose_worker(
-            task.worker_type,
+            task.work_kind,
             context,
         )
         execution = self.provider.execution_identity()

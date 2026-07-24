@@ -211,7 +211,8 @@ class GitRunnerTests(GitRepositoryFixture, unittest.TestCase):
         return TaskContract(
             id="TASK-001",
             objective="Edit README",
-            worker_type="implementation",
+            work_kind="implementation",
+            domain="general",
             covers=("AC-001",),
             depends_on=(),
             path_scope=("README.md",),

@@ -49,7 +49,8 @@ class IntegrationFixture(GitRepositoryFixture):
         source_contract = TaskContract(
             id="TASK-001",
             objective="Edit README",
-            worker_type="implementation",
+            work_kind="implementation",
+            domain="general",
             covers=("AC-001",),
             depends_on=(),
             path_scope=("README.md",),
@@ -133,7 +134,8 @@ class IntegrationFixture(GitRepositoryFixture):
         self.contract = TaskContract(
             id=source_contract.id,
             objective=source_contract.objective,
-            worker_type=source_contract.worker_type,
+            work_kind=source_contract.work_kind,
+            domain=source_contract.domain,
             covers=source_contract.covers,
             depends_on=source_contract.depends_on,
             path_scope=contract_scope,
