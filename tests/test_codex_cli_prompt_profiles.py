@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -10,6 +12,7 @@ import tempfile
 import unittest
 import uuid
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 
 from vibe.config import frozen_config_bytes
@@ -87,12 +90,44 @@ PROMPT_EVAL_CASES = (
             "}\n"
         ),
         verification_source=(
+            "import ast, re\n"
+            "from html.parser import HTMLParser\n"
             "from pathlib import Path\n"
             "text = Path('web/app.js').read_text(encoding='utf-8')\n"
-            "assert 'aria-busy=\"true\"' in text\n"
-            "assert 'disabled' in text\n"
-            "assert 'Saving…' in text\n"
-            "assert '<button>Save</button>' not in text\n"
+            "comments = re.compile("
+            "r\"('(?:\\\\.|[^'\\\\])*'|\\\"(?:\\\\.|[^\\\"\\\\])*\\\""
+            "|`(?:\\\\.|[^`\\\\])*`)|//[^\\r\\n]*|/\\*.*?\\*/\", "
+            "re.S)\n"
+            "clean = comments.sub(lambda match: match.group(1) or '', text)\n"
+            "returned = re.search("
+            "r\"\\bfunction\\s+renderLoading\\s*\\([^)]*\\)\\s*\\{"
+            "[^{}]*?\\breturn\\s+(?P<literal>"
+            "'(?:\\\\.|[^'\\\\])*'|\\\"(?:\\\\.|[^\\\"\\\\])*\\\")"
+            "\\s*;\", clean, re.S)\n"
+            "assert returned is not None\n"
+            "markup = ast.literal_eval(returned.group('literal'))\n"
+            "class ButtonParser(HTMLParser):\n"
+            "    def __init__(self):\n"
+            "        super().__init__()\n"
+            "        self.buttons = []\n"
+            "        self.active = None\n"
+            "    def handle_starttag(self, tag, attrs):\n"
+            "        if tag == 'button':\n"
+            "            self.buttons.append([dict(attrs), []])\n"
+            "            self.active = self.buttons[-1]\n"
+            "    def handle_endtag(self, tag):\n"
+            "        if tag == 'button':\n"
+            "            self.active = None\n"
+            "    def handle_data(self, data):\n"
+            "        if self.active is not None:\n"
+            "            self.active[1].append(data)\n"
+            "parser = ButtonParser()\n"
+            "parser.feed(markup)\n"
+            "assert len(parser.buttons) == 1\n"
+            "attrs, label = parser.buttons[0]\n"
+            "assert attrs.get('aria-busy') == 'true'\n"
+            "assert 'disabled' in attrs\n"
+            "assert ''.join(label).strip() == 'Saving…'\n"
         ),
     ),
     PromptEvalCase(
@@ -184,14 +219,22 @@ PROMPT_EVAL_CASES = (
             "ADD COLUMN IF NOT EXISTS risk TEXT;\n"
         ),
         verification_source=(
+            "import re\n"
             "from pathlib import Path\n"
-            "text = Path('data/schema.sql').read_text("
-            "encoding='utf-8').strip()\n"
-            "upper = text.upper()\n"
-            "assert 'ADD COLUMN IF NOT EXISTS RISK TEXT' in upper\n"
-            "assert upper.count('ALTER TABLE ACCOUNTS') == 1\n"
-            "assert 'DROP ' not in upper\n"
-            "assert text.endswith(';')\n"
+            "text = Path('data/schema.sql').read_text(encoding='utf-8')\n"
+            "comments = re.compile("
+            "r\"('(?:''|[^'])*'|\\\"(?:\\\"\\\"|[^\\\"])*\\\")"
+            "|--[^\\r\\n]*|/\\*.*?\\*/\", re.S)\n"
+            "clean = comments.sub(lambda match: match.group(1) or '', text)\n"
+            "statements = [part.strip() for part in clean.split(';') "
+            "if part.strip()]\n"
+            "assert len(statements) == 1\n"
+            "statement = ' '.join(statements[0].upper().split())\n"
+            "assert re.fullmatch("
+            "r'ALTER TABLE ACCOUNTS ADD COLUMN IF NOT EXISTS RISK TEXT', "
+            "statement)\n"
+            "assert clean.rstrip().endswith(';')\n"
+            "assert 'DROP ' not in statement\n"
         ),
     ),
     PromptEvalCase(
@@ -364,13 +407,97 @@ def _create_case_repository(
     return repository
 
 
+_JAVASCRIPT_COMMENTS = re.compile(
+    r"""(
+        '(?:\\.|[^'\\])*'
+        | "(?:\\.|[^"\\])*"
+        | `(?:\\.|[^`\\])*`
+    )
+    | //[^\r\n]*
+    | /\*.*?\*/
+    """,
+    re.DOTALL | re.VERBOSE,
+)
+
+_RENDER_LOADING_RETURN = re.compile(
+    r"""
+    \bfunction\s+renderLoading\s*\([^)]*\)\s*\{
+    [^{}]*?\breturn\s+
+    (?P<literal>
+        '(?:\\.|[^'\\])*'
+        | "(?:\\.|[^"\\])*"
+    )
+    \s*;
+    """,
+    re.DOTALL | re.VERBOSE,
+)
+
+_SQL_COMMENTS = re.compile(
+    r"""(
+        '(?:''|[^'])*'
+        | "(?:""|[^"])*"
+    )
+    | --[^\r\n]*
+    | /\*.*?\*/
+    """,
+    re.DOTALL | re.VERBOSE,
+)
+
+
+class _ButtonMarkupParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.buttons: list[tuple[dict[str, str | None], list[str]]] = []
+        self.active: tuple[dict[str, str | None], list[str]] | None = None
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag == "button":
+            button = (dict(attrs), [])
+            self.buttons.append(button)
+            self.active = button
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "button":
+            self.active = None
+
+    def handle_data(self, data: str) -> None:
+        if self.active is not None:
+            self.active[1].append(data)
+
+
+def _render_loading_button(
+    text: str,
+) -> tuple[dict[str, str | None], list[str]] | None:
+    clean = _JAVASCRIPT_COMMENTS.sub(
+        lambda match: match.group(1) or "",
+        text,
+    )
+    returned = _RENDER_LOADING_RETURN.search(clean)
+    if returned is None:
+        return None
+    markup = ast.literal_eval(returned.group("literal"))
+    if not isinstance(markup, str):
+        return None
+    parser = _ButtonMarkupParser()
+    parser.feed(markup)
+    if len(parser.buttons) != 1:
+        return None
+    return parser.buttons[0]
+
+
 def _frontend_checks(repository: Path) -> tuple[bool, ...]:
     text = (repository / "web/app.js").read_text(encoding="utf-8")
+    button = _render_loading_button(text)
+    attrs, label = button if button is not None else ({}, [])
     return (
-        'aria-busy="true"' in text,
-        "disabled" in text,
-        "Saving…" in text,
-        "<button>Save</button>" not in text,
+        button is not None,
+        attrs.get("aria-busy") == "true",
+        "disabled" in attrs,
+        "".join(label).strip() == "Saving…",
     )
 
 
@@ -404,15 +531,33 @@ def _client_checks(repository: Path) -> tuple[bool, ...]:
 
 
 def _data_checks(repository: Path) -> tuple[bool, ...]:
-    text = (
-        repository / "data/schema.sql"
-    ).read_text(encoding="utf-8").strip()
-    upper = text.upper()
+    text = (repository / "data/schema.sql").read_text(encoding="utf-8")
+    clean = _SQL_COMMENTS.sub(
+        lambda match: match.group(1) or "",
+        text,
+    )
+    statements = tuple(
+        part.strip()
+        for part in clean.split(";")
+        if part.strip()
+    )
+    statement = (
+        " ".join(statements[0].upper().split())
+        if len(statements) == 1
+        else ""
+    )
     return (
-        "ADD COLUMN IF NOT EXISTS RISK TEXT" in upper,
-        upper.count("ALTER TABLE ACCOUNTS") == 1,
-        "DROP " not in upper,
-        text.endswith(";"),
+        len(statements) == 1 and clean.rstrip().endswith(";"),
+        statement.startswith("ALTER TABLE ACCOUNTS "),
+        "ADD COLUMN IF NOT EXISTS RISK TEXT" in statement,
+        re.fullmatch(
+            (
+                r"ALTER TABLE ACCOUNTS ADD COLUMN "
+                r"IF NOT EXISTS RISK TEXT"
+            ),
+            statement,
+        )
+        is not None,
     )
 
 
@@ -594,6 +739,67 @@ def exercise_offline_oracle(
 
 
 class PromptEvalOracleFixtureTests(unittest.TestCase):
+    def assert_adversarial_fixture_rejected(
+        self,
+        case: PromptEvalCase,
+        content: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = _create_case_repository(
+                Path(temporary),
+                case,
+                "adversarial",
+            )
+            (repository / case.relative_path).write_text(
+                content,
+                encoding="utf-8",
+            )
+            config = _config_for_case(case, "domain-v2")
+            store = StateStore.for_run(
+                repository,
+                "RUN-20260724-999",
+            )
+
+            self.assertLess(
+                _semantic_score(case, repository),
+                case.maximum_score,
+            )
+            self.assertFalse(
+                _run_verification(
+                    case,
+                    repository,
+                    config,
+                    store,
+                ).passed
+            )
+
+    def test_frontend_oracle_rejects_requirements_only_in_comment(
+        self,
+    ) -> None:
+        case = PROMPT_EVAL_CASES[0]
+        self.assertEqual(case.name, "frontend-loading")
+        self.assert_adversarial_fixture_rejected(
+            case,
+            (
+                "function renderLoading(){ return "
+                "'<button>Wait</button>'; } "
+                '// aria-busy="true" disabled Saving…\n'
+            ),
+        )
+
+    def test_data_oracle_rejects_idempotency_guard_only_in_comment(
+        self,
+    ) -> None:
+        case = PROMPT_EVAL_CASES[3]
+        self.assertEqual(case.name, "data-idempotent-migration")
+        self.assert_adversarial_fixture_rejected(
+            case,
+            (
+                "ALTER TABLE accounts ADD COLUMN risk TEXT; "
+                "-- ADD COLUMN IF NOT EXISTS RISK TEXT;\n"
+            ),
+        )
+
     def test_six_case_oracles_reject_broken_and_accept_fixed_fixtures(
         self,
     ) -> None:
