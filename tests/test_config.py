@@ -67,6 +67,28 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "unknown config fields"):
             load_run_config(self.target, {})
 
+    def test_non_string_contract_profile_is_always_a_contract_error(
+        self,
+    ) -> None:
+        frozen = json.loads(
+            frozen_config_bytes(load_run_config(self.target, {}))
+        )
+        for value in ([], {}, 1, True, None):
+            with self.subTest(boundary="frozen", value=value):
+                frozen["contract_profile"] = value
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "contract_profile",
+                ):
+                    parse_frozen_config(frozen)
+            with self.subTest(boundary="project", value=value):
+                (self.target / "vibe.json").write_text(
+                    json.dumps({"contract_profile": value}),
+                    encoding="utf-8",
+                )
+                with self.assertRaises(ContractError):
+                    load_run_config(self.target, {})
+
     def test_cli_override_wins_and_the_result_can_be_frozen(self) -> None:
         (self.target / "vibe.json").write_text(
             json.dumps({"scheduler": {"max_workers": 2}}),

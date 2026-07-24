@@ -234,7 +234,10 @@ def _parse_config(
         "contract_profile",
         LEGACY_CONTRACT_PROFILE if frozen else DOMAIN_CONTRACT_PROFILE,
     )
-    if contract_profile not in CONTRACT_PROFILES:
+    if (
+        not isinstance(contract_profile, str)
+        or contract_profile not in CONTRACT_PROFILES
+    ):
         raise ContractError("config.contract_profile is invalid")
     provider = _object(root.get("provider", {}), "provider", {"name"})
     scheduler = _object(
