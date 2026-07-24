@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from vibe.config import frozen_config_bytes
 from vibe.models import (
@@ -249,6 +249,22 @@ class CodexCLIPromptProfileTests(unittest.TestCase):
                 task = plan.tasks[0]
                 self.assertEqual(task.domain, expected_domain)
                 self.assertEqual(task.work_kind, expected_work_kind)
+                normalized_relative_path = str(
+                    PurePosixPath(relative_path)
+                )
+                self.assertTrue(
+                    any(
+                        path_matches_scope(
+                            normalized_relative_path,
+                            scope,
+                        )
+                        for scope in task.path_scope
+                    )
+                )
+                self.assertEqual(
+                    task.acceptance_checks,
+                    ("syntax",),
+                )
 
                 worker_invocation = worker.prepare(
                     run_id="RUN-20260724-001",
@@ -276,16 +292,34 @@ class CodexCLIPromptProfileTests(unittest.TestCase):
                     worker_invocation,
                     result_body,
                 )
+                tracked_paths = self.git(
+                    repository,
+                    "diff",
+                    "--name-only",
+                    "HEAD",
+                ).splitlines()
+                untracked_paths = self.git(
+                    repository,
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
+                ).splitlines()
                 actual_paths = tuple(
-                    filter(
-                        None,
-                        self.git(
-                            repository,
-                            "diff",
-                            "--name-only",
-                            "HEAD",
-                        ).splitlines(),
+                    sorted(
+                        {
+                            str(PurePosixPath(path))
+                            for path in (
+                                *tracked_paths,
+                                *untracked_paths,
+                            )
+                            if path
+                        }
                     )
+                )
+                self.assertTrue(actual_paths)
+                self.assertIn(
+                    normalized_relative_path,
+                    actual_paths,
                 )
                 self.assertTrue(
                     all(
@@ -298,15 +332,18 @@ class CodexCLIPromptProfileTests(unittest.TestCase):
                 )
                 self.assertEqual(result.status, "COMPLETED")
                 self.assertEqual(
-                    set(result.changed_paths),
-                    set(actual_paths),
+                    tuple(sorted(result.changed_paths)),
+                    actual_paths,
                 )
-                self.assertTrue(
-                    {
+                self.assertEqual(
+                    tuple(
                         check.command_id
                         for check in result.checks
-                    }.issubset(task.acceptance_checks)
+                    ),
+                    ("syntax",),
                 )
+                for check in result.checks:
+                    self.assertEqual(check.exit_code, 0)
 
 
 if __name__ == "__main__":
