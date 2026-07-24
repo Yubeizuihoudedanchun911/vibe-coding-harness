@@ -96,7 +96,10 @@ class PlannerRunner:
             ),
             "config_sha256": self.config_sha256,
         }
-        rendered = self.registry.compose_planner(enriched)
+        rendered = self.registry.compose_planner(
+            self.config.contract_profile,
+            enriched,
+        )
         execution = self.provider.execution_identity()
         return RoleInvocation(
             role="planner",

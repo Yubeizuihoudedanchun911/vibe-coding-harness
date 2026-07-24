@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import threading
@@ -18,6 +19,8 @@ from tests.test_controller_fake_provider import (
     _single_task_plan,
     _worker_result,
 )
+from vibe.config import frozen_config_bytes, parse_frozen_config
+from vibe.models import FrozenRunConfig
 
 
 DISPATCH_CRASH_POINTS = (
@@ -41,6 +44,7 @@ class ControllerRecoveryTests(unittest.TestCase):
         fault_point: str | None = None,
         release: threading.Event | None = None,
         resume_worker: bool = False,
+        config: FrozenRunConfig | None = None,
     ) -> ControllerScenario:
         scripts = [
             ProviderScript("planner", _single_task_plan()),
@@ -66,7 +70,7 @@ class ControllerRecoveryTests(unittest.TestCase):
             root,
             ScenarioSpec(
                 goal="Create a recoverable file",
-                config=controller_config(),
+                config=config or controller_config(),
                 scripts=tuple(scripts),
                 fault_points=(
                     frozenset({fault_point})
@@ -75,6 +79,96 @@ class ControllerRecoveryTests(unittest.TestCase):
                 ),
             ),
         )
+
+    def test_missing_contract_profile_resumes_with_v1_contracts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_config_path = root / "config.json"
+            old_config = json.loads(
+                frozen_config_bytes(controller_config())
+            )
+            del old_config["contract_profile"]
+            old_config_path.write_text(
+                json.dumps(old_config),
+                encoding="utf-8",
+            )
+            recovered_config = parse_frozen_config(
+                json.loads(
+                    old_config_path.read_text(encoding="utf-8")
+                )
+            )
+            scenario = self.build(
+                root / "scenario",
+                fault_point=(
+                    "after_provider_start_before_handle_binding"
+                ),
+                config=recovered_config,
+            )
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "after_provider_start_before_handle_binding",
+                ):
+                    scenario.controller.execute(scenario.run_id)
+                state = scenario.new_controller().resume(
+                    scenario.run_id
+                )
+                persisted = json.loads(
+                    (
+                        scenario.store.root
+                        / "plan/plan-v001.json"
+                    ).read_bytes()
+                )
+                task = persisted["tasks"][0]
+                self.assertEqual(state["status"], "SUCCEEDED")
+                self.assertEqual(
+                    recovered_config.contract_profile,
+                    "legacy-v1",
+                )
+                self.assertEqual(
+                    task["worker_type"],
+                    "implementation",
+                )
+                self.assertNotIn("work_kind", task)
+                self.assertNotIn("domain", task)
+
+                prompt_refs = []
+                for reference in state["role_attempts"]["planner"]:
+                    manifest = json.loads(
+                        (
+                            scenario.store.root
+                            / reference["path"]
+                        ).read_bytes()
+                    )
+                    prompt_refs.extend(manifest["prompt_versions"])
+                for task_state in state["tasks"].values():
+                    for reference in task_state["attempts"]:
+                        manifest = json.loads(
+                            (
+                                scenario.store.root
+                                / reference["path"]
+                            ).read_bytes()
+                        )
+                        prompt_refs.extend(
+                            manifest["prompt_versions"]
+                        )
+                for reference in state["role_attempts"]["evaluator"]:
+                    manifest = json.loads(
+                        (
+                            scenario.store.root
+                            / reference["path"]
+                        ).read_bytes()
+                    )
+                    prompt_refs.extend(manifest["prompt_versions"])
+                self.assertTrue(prompt_refs)
+                self.assertEqual(
+                    {reference["version"] for reference in prompt_refs},
+                    {1},
+                )
+            finally:
+                scenario.close()
 
     def test_dispatch_crash_windows_resume_without_duplicate_start(
         self,

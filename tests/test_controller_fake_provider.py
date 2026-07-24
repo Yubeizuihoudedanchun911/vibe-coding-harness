@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import subprocess
@@ -102,6 +103,15 @@ def _single_task_plan(
             ],
         }
     )
+
+
+def _domain_plan() -> bytes:
+    value = json.loads(_single_task_plan())
+    value["schema_version"] = 2
+    task = value["tasks"][0]
+    task["work_kind"] = task.pop("worker_type")
+    task["domain"] = "client"
+    return _body(value)
 
 
 def _conflicting_plan() -> bytes:
@@ -285,6 +295,52 @@ class ControllerFakeProviderTests(unittest.TestCase):
             ),
             {"src/a.txt", "src/b.txt"},
         )
+
+    def test_domain_v2_run_persists_v2_and_uses_domain_prompt(
+        self,
+    ) -> None:
+        config = dataclasses.replace(
+            controller_config(),
+            contract_profile="domain-v2",
+        )
+        scenario = self.build_scenario(
+            (
+                ProviderScript("planner", _domain_plan()),
+                ProviderScript(
+                    "worker",
+                    _worker_result,
+                    on_start=_edit_worker,
+                ),
+                ProviderScript(
+                    "evaluator",
+                    _pass_evaluation(),
+                ),
+            ),
+            config=config,
+        )
+        state = scenario.controller.execute(scenario.run_id)
+        persisted = json.loads(
+            (
+                scenario.store.root / "plan/plan-v001.json"
+            ).read_bytes()
+        )
+        task = persisted["tasks"][0]
+        self.assertEqual(state["status"], "SUCCEEDED")
+        self.assertEqual(
+            task["work_kind"],
+            "implementation",
+        )
+        self.assertEqual(task["domain"], "client")
+        self.assertNotIn("worker_type", task)
+        worker_request = next(
+            item
+            for item in scenario.provider.requests
+            if item.role == "worker"
+        )
+        prompt = Path(worker_request.prompt_path).read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("DOMAIN: CLIENT", prompt)
 
     def test_conflicting_resources_never_run_together(self) -> None:
         release = threading.Event()

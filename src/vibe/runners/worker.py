@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from vibe.config import resolve_command_ids
 from vibe.models import (
     ContractError,
     FrozenRunConfig,
@@ -80,10 +81,9 @@ class WorkerRunner:
                 task.path_scope,
             )
         )
-        task_contract = {
+        task_contract: dict[str, object] = {
             "id": task.id,
             "objective": task.objective,
-            "worker_type": task.work_kind,
             "covers": list(task.covers),
             "depends_on": list(task.depends_on),
             "path_scope": list(task.path_scope),
@@ -95,6 +95,20 @@ class WorkerRunner:
             ),
             "max_attempts": task.max_attempts,
         }
+        if self.config.contract_profile == "legacy-v1":
+            task_contract["worker_type"] = task.work_kind
+        else:
+            task_contract["work_kind"] = task.work_kind
+            task_contract["domain"] = task.domain
+        authorized_commands = resolve_command_ids(
+            self.config,
+            task.acceptance_checks,
+        )
+        required_command_ids = tuple(
+            command_id
+            for command_id in self.config.required_command_ids
+            if command_id in task.acceptance_checks
+        )
         branch = (
             f"refs/heads/vibe/{run_id}/"
             f"{task.id}-a{attempt_no}"
@@ -109,15 +123,21 @@ class WorkerRunner:
                 "task_base_sha": task_base_sha,
                 "branch": branch,
                 "worktree": relative_worktree,
-                "authorized_command_ids": list(
-                    task.acceptance_checks
+                "authorized_commands": [
+                    command.as_dict()
+                    for command in authorized_commands
+                ],
+                "required_command_ids": list(
+                    required_command_ids
                 ),
                 "config_sha256": self.config_sha256,
             },
             "previous_failure": previous_failure,
         }
         rendered = self.registry.compose_worker(
+            self.config.contract_profile,
             task.work_kind,
+            task.domain,
             context,
         )
         execution = self.provider.execution_identity()
@@ -156,12 +176,7 @@ class WorkerRunner:
                 }
             ),
             authorized_command_ids=task.acceptance_checks,
-            required_command_ids=tuple(
-                command_id
-                for command_id
-                in self.config.required_command_ids
-                if command_id in task.acceptance_checks
-            ),
+            required_command_ids=required_command_ids,
             config_sha256=self.config_sha256,
             codex_version=execution.codex_version,
             execution_policy_sha256=execution.policy_sha256,

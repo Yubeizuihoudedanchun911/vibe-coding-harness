@@ -99,7 +99,10 @@ class EvaluatorRunner:
             ),
             "config_sha256": self.config_sha256,
         }
-        rendered = self.registry.compose_evaluator(enriched)
+        rendered = self.registry.compose_evaluator(
+            self.config.contract_profile,
+            enriched,
+        )
         execution = self.provider.execution_identity()
         return RoleInvocation(
             role="evaluator",

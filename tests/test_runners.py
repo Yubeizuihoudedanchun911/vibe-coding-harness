@@ -136,6 +136,13 @@ class RunnerTests(unittest.TestCase):
             **common,
             read_only_audit=self.audit,
         )
+        self.domain_evaluator = EvaluatorRunner(
+            **{
+                **common,
+                "config": self.domain_config,
+            },
+            read_only_audit=self.audit,
+        )
         self._create_initial_state()
 
     def _create_initial_state(self) -> None:
@@ -469,6 +476,113 @@ class RunnerTests(unittest.TestCase):
             "implementation",
         )
         self.assertEqual(parsed.tasks[0].domain, "client")
+
+    def test_domain_runners_use_v2_planner_and_evaluator_prompts(
+        self,
+    ) -> None:
+        planner = self.domain_planner.prepare(
+            run_id=self.run_id,
+            operation_id="PLAN-INITIAL-DOMAIN",
+            attempt_no=1,
+            attempt_created_at="2026-07-23T10:00:00.123456+00:00",
+            attempt_token="ATTEMPT-PLANNER-DOMAIN",
+            worktree=self.worktree,
+            context={"goal": "Create a domain-aware plan"},
+            artifact_prefix=role_attempt_prefix(
+                "planner",
+                "PLAN-INITIAL-DOMAIN",
+                1,
+            ),
+        )
+        self.assertEqual(
+            [
+                (item.prompt_id, item.version)
+                for item in planner.prompt_versions
+            ],
+            [("planner", 2)],
+        )
+
+        evaluator = self.domain_evaluator.prepare(
+            run_id=self.run_id,
+            operation_id="EVAL-GLOBAL-DOMAIN",
+            attempt_no=1,
+            attempt_created_at="2026-07-23T10:00:00.123456+00:00",
+            attempt_token="ATTEMPT-EVALUATOR-DOMAIN",
+            worktree=self.worktree,
+            context={"goal": "Evaluate domain-aware work"},
+            artifact_prefix=role_attempt_prefix(
+                "evaluator",
+                "EVAL-GLOBAL-DOMAIN",
+                1,
+            ),
+        )
+        self.assertEqual(
+            [
+                (item.prompt_id, item.version)
+                for item in evaluator.prompt_versions
+            ],
+            [("evaluator", 2)],
+        )
+
+    def test_domain_worker_receives_only_task_command_specs(
+        self,
+    ) -> None:
+        config = dataclasses.replace(
+            self.config,
+            contract_profile="domain-v2",
+            command_catalog=(
+                self.config.command_catalog[0],
+                CommandSpec(
+                    id="lint",
+                    purpose="Run lint",
+                    argv=("python3", "-m", "ruff", "check", "."),
+                    cwd=".",
+                    timeout_seconds=120,
+                    env_allowlist=("CI",),
+                ),
+            ),
+        )
+        worker = WorkerRunner(
+            registry=self.registry,
+            provider=self.provider,
+            target_root=self.target,
+            run_root=self.store.root,
+            expected_base="a" * 40,
+            config=config,
+            config_sha256="sha256:" + "e" * 64,
+        )
+        task = dataclasses.replace(
+            self.task,
+            work_kind="testing",
+            domain="client",
+            acceptance_checks=("lint",),
+        )
+        invocation = worker.prepare(
+            run_id=self.run_id,
+            task=task,
+            operation_id="WORK-TASK-001-A1",
+            attempt_no=1,
+            attempt_created_at="2026-07-23T10:00:00.123456+00:00",
+            attempt_token="ATTEMPT-WORKER-DOMAIN",
+            worktree=self.worktree,
+            task_base_sha="a" * 40,
+            previous_failure=None,
+            artifact_prefix="tasks/TASK-001/attempts/001",
+        )
+        text = invocation.prompt_body.decode("utf-8")
+        self.assertIn('"work_kind":"testing"', text)
+        self.assertIn('"domain":"client"', text)
+        self.assertIn('"id":"lint"', text)
+        self.assertIn(
+            '"argv":["python3","-m","ruff","check","."]',
+            text,
+        )
+        self.assertIn('"timeout_seconds":120', text)
+        self.assertNotIn('"id":"unit"', text)
+        self.assertEqual(
+            invocation.authorized_command_ids,
+            ("lint",),
+        )
 
     def test_planner_v2_rejects_non_string_work_kind_as_contract_error(
         self,
