@@ -315,9 +315,15 @@ class PlannerRunner:
             else:
                 work_kind = item["work_kind"]
                 domain = item["domain"]
-            if work_kind not in WORK_KINDS:
+            if (
+                not isinstance(work_kind, str)
+                or work_kind not in WORK_KINDS
+            ):
                 raise ContractError("task work_kind is invalid")
-            if domain not in DOMAINS:
+            if (
+                not isinstance(domain, str)
+                or domain not in DOMAINS
+            ):
                 raise ContractError("task domain is invalid")
             covers = _unique_strings(
                 item["covers"],

@@ -430,42 +430,71 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(parsed.tasks[0].domain, "general")
 
+    @staticmethod
+    def domain_plan_body() -> dict[str, object]:
+        return {
+            "schema_version": 2,
+            "plan_version": 1,
+            "summary": "One client task",
+            "acceptance_criteria": [
+                {
+                    "id": "AC-001",
+                    "description": "Client works",
+                }
+            ],
+            "global_verification": ["unit"],
+            "tasks": [
+                {
+                    "id": "TASK-001",
+                    "objective": "Implement offline recovery",
+                    "work_kind": "implementation",
+                    "domain": "client",
+                    "covers": ["AC-001"],
+                    "depends_on": [],
+                    "path_scope": ["client/"],
+                    "exclusive_resources": [],
+                    "acceptance_checks": ["unit"],
+                    "max_attempts": 3,
+                }
+            ],
+        }
+
     def test_planner_v2_normalizes_work_kind_and_domain(self) -> None:
-        body = canonical_json_bytes(
-            {
-                "schema_version": 2,
-                "plan_version": 1,
-                "summary": "One client task",
-                "acceptance_criteria": [
-                    {
-                        "id": "AC-001",
-                        "description": "Client works",
-                    }
-                ],
-                "global_verification": ["unit"],
-                "tasks": [
-                    {
-                        "id": "TASK-001",
-                        "objective": "Implement offline recovery",
-                        "work_kind": "implementation",
-                        "domain": "client",
-                        "covers": ["AC-001"],
-                        "depends_on": [],
-                        "path_scope": ["client/"],
-                        "exclusive_resources": [],
-                        "acceptance_checks": ["unit"],
-                        "max_attempts": 3,
-                    }
-                ],
-            }
+        parsed = self.domain_planner.parse_result(
+            canonical_json_bytes(self.domain_plan_body())
         )
-        parsed = self.domain_planner.parse_result(body)
         self.assertEqual(parsed.schema_version, 2)
         self.assertEqual(
             parsed.tasks[0].work_kind,
             "implementation",
         )
         self.assertEqual(parsed.tasks[0].domain, "client")
+
+    def test_planner_v2_rejects_non_string_work_kind_as_contract_error(
+        self,
+    ) -> None:
+        body = self.domain_plan_body()
+        body["tasks"][0]["work_kind"] = []
+        with self.assertRaisesRegex(
+            ContractError,
+            "work_kind",
+        ):
+            self.domain_planner.parse_result(
+                canonical_json_bytes(body)
+            )
+
+    def test_planner_v2_rejects_non_string_domain_as_contract_error(
+        self,
+    ) -> None:
+        body = self.domain_plan_body()
+        body["tasks"][0]["domain"] = {}
+        with self.assertRaisesRegex(
+            ContractError,
+            "domain",
+        ):
+            self.domain_planner.parse_result(
+                canonical_json_bytes(body)
+            )
 
     def test_profile_rejects_the_other_plan_schema(self) -> None:
         legacy_body = canonical_json_bytes(
