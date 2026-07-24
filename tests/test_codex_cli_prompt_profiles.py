@@ -174,7 +174,16 @@ class CodexCLIPromptProfileTests(unittest.TestCase):
         path = repository / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("baseline\n", encoding="utf-8")
-        self.git(repository, "add", relative_path)
+        (repository / ".gitignore").write_text(
+            "__pycache__/\n*.py[cod]\n*$py.class\n",
+            encoding="utf-8",
+        )
+        self.git(
+            repository,
+            "add",
+            ".gitignore",
+            relative_path,
+        )
         self.git(repository, "commit", "-m", "baseline")
         return repository
 
