@@ -54,7 +54,7 @@
 - `tests/test_runners.py`：Planner/Worker/Evaluator profile 路由与授权命令上下文。
 - `tests/test_controller_fake_provider.py`：`domain-v2` 全链路和 `legacy-v1` 恢复。
 - `tests/test_codex_cli_prompt_profiles.py`：显式 opt-in 的六方向真实 Provider 评测。
-- `tests/test_package_metadata.py`、`pyproject.toml`、`.github/workflows/ci.yml`：wheel/sdist 资源完整性。
+- `tests/test_package_metadata.py`、`scripts/check_installed_resources.py`、`pyproject.toml`、`.github/workflows/ci.yml`：用单一校验入口保证 wheel/sdist 资源完整性。
 - `README.md`、`README.zh-CN.md`、`CHANGELOG.md`：公开契约和升级语义。
 
 ---
@@ -2116,6 +2116,7 @@ rtk git commit -m "test: add domain prompt profile evals"
 ### Task 6: 打包、文档与完整发布门禁
 
 **Files:**
+- Create: `scripts/check_installed_resources.py`
 - Modify: `pyproject.toml`
 - Modify: `tests/test_package_metadata.py`
 - Modify: `.github/workflows/ci.yml`
@@ -2229,13 +2230,78 @@ Expected: wheel 清单缺少 `prompts/workers/kinds/` 或 `prompts/workers/domai
 ]
 ```
 
-`.github/workflows/ci.yml` 的 wheel 和 sdist smoke 使用各自已安装环境的 Python 执行资源断言。两个位置均把现有内联列表替换为同一段：
+创建 `scripts/check_installed_resources.py`，让 wheel 和 sdist 共用同一份校验逻辑：
 
-```bash
-python -c "from vibe.prompt_registry import PromptRegistry; r=PromptRegistry.default(); expected=(('planner',1),('planner',2),('workers/base',1),('workers/base',2),('workers/implementation',1),('workers/testing',1),('workers/performance',1),('workers/code-quality',1),('workers/documentation',1),('workers/general',1),('workers/kinds/implementation',1),('workers/kinds/testing',1),('workers/kinds/performance',1),('workers/kinds/code-quality',1),('workers/kinds/documentation',1),('workers/kinds/general',1),('workers/domains/frontend',1),('workers/domains/backend',1),('workers/domains/client',1),('workers/domains/data',1),('workers/domains/infrastructure',1),('workers/domains/general',1),('evaluator',1),('evaluator',2)); [r.load(prompt_id,version) for prompt_id,version in expected]; assert all((r.schema_root/name).is_file() for name in ('plan-v1.schema.json','plan-v2.schema.json','worker-result-v1.schema.json','evaluation-v1.schema.json'))"
+```python
+from __future__ import annotations
+
+from vibe.prompt_registry import PromptRegistry
+
+
+EXPECTED_PROMPTS = (
+    ("planner", 1),
+    ("planner", 2),
+    ("workers/base", 1),
+    ("workers/base", 2),
+    ("workers/implementation", 1),
+    ("workers/testing", 1),
+    ("workers/performance", 1),
+    ("workers/code-quality", 1),
+    ("workers/documentation", 1),
+    ("workers/general", 1),
+    ("workers/kinds/implementation", 1),
+    ("workers/kinds/testing", 1),
+    ("workers/kinds/performance", 1),
+    ("workers/kinds/code-quality", 1),
+    ("workers/kinds/documentation", 1),
+    ("workers/kinds/general", 1),
+    ("workers/domains/frontend", 1),
+    ("workers/domains/backend", 1),
+    ("workers/domains/client", 1),
+    ("workers/domains/data", 1),
+    ("workers/domains/infrastructure", 1),
+    ("workers/domains/general", 1),
+    ("evaluator", 1),
+    ("evaluator", 2),
+)
+EXPECTED_SCHEMAS = (
+    "plan-v1.schema.json",
+    "plan-v2.schema.json",
+    "worker-result-v1.schema.json",
+    "evaluation-v1.schema.json",
+)
+
+
+def main() -> None:
+    registry = PromptRegistry.default()
+    for prompt_id, version in EXPECTED_PROMPTS:
+        registry.load(prompt_id, version)
+    missing = [
+        name
+        for name in EXPECTED_SCHEMAS
+        if not (registry.schema_root / name).is_file()
+    ]
+    if missing:
+        raise SystemExit(
+            "missing installed schemas: " + ", ".join(missing)
+        )
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-保留当前 workflow 中 wheel 的 `"$RUNNER_TEMP/vibe-wheel/bin/python"` 和 sdist 的 `"$RUNNER_TEMP/vibe-sdist/bin/python"` 前缀，只替换 `-c` 后的 Python 内容。
+`.github/workflows/ci.yml` 的 wheel 和 sdist smoke 在 `cd "$RUNNER_TEMP"` 后分别调用：
+
+```bash
+"$RUNNER_TEMP/vibe-wheel/bin/python" \
+  "$GITHUB_WORKSPACE/scripts/check_installed_resources.py"
+```
+
+```bash
+"$RUNNER_TEMP/vibe-sdist/bin/python" \
+  "$GITHUB_WORKSPACE/scripts/check_installed_resources.py"
+```
 
 - [ ] **Step 4: 更新英文和中文公开文档**
 
@@ -2305,6 +2371,7 @@ Expected: 两种发行物均可加载全部 V1/V2 Prompt 和四个 Schema。
 
 ```bash
 rtk git add \
+  scripts/check_installed_resources.py \
   pyproject.toml \
   tests/test_package_metadata.py \
   .github/workflows/ci.yml \
