@@ -483,12 +483,18 @@ def _canonical_id(
     return raw
 
 
-def _relative_path(value: str, field: str) -> str:
+def _relative_path(
+    value: str,
+    field: str,
+    *,
+    allow_directory: bool = True,
+) -> str:
     directory = value.endswith("/")
     raw = value[:-1] if directory else value
     path = PurePosixPath(raw)
     if (
-        path.is_absolute()
+        (directory and not allow_directory)
+        or path.is_absolute()
         or not path.parts
         or ".." in path.parts
         or "." in path.parts

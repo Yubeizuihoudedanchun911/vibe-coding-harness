@@ -241,7 +241,11 @@ class WorkerRunner:
             "changed_paths",
         )
         for path in changed_paths:
-            _relative_path(path, "changed path")
+            _relative_path(
+                path,
+                "changed path",
+                allow_directory=False,
+            )
         checks: list[WorkerCheck] = []
         command_ids: set[str] = set()
         for value in _list(raw["checks"], "checks"):

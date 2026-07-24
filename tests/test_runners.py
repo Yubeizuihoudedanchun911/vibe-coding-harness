@@ -478,6 +478,28 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(parsed.tasks[0].domain, "client")
 
+    def test_plan_profiles_preserve_directory_path_scopes(self) -> None:
+        domain_body = self.domain_plan_body()
+        legacy_body = self.domain_plan_body()
+        legacy_body["schema_version"] = 1
+        legacy_task = legacy_body["tasks"][0]
+        legacy_task["worker_type"] = legacy_task.pop("work_kind")
+        legacy_task.pop("domain")
+        for planner, body in (
+            (self.planner, legacy_body),
+            (self.domain_planner, domain_body),
+        ):
+            with self.subTest(
+                contract_profile=planner.config.contract_profile,
+            ):
+                parsed = planner.parse_result(
+                    canonical_json_bytes(body)
+                )
+                self.assertEqual(
+                    parsed.tasks[0].path_scope,
+                    ("client/",),
+                )
+
     def test_domain_runners_use_v2_planner_and_evaluator_prompts(
         self,
     ) -> None:
@@ -869,6 +891,29 @@ class RunnerTests(unittest.TestCase):
         body = self.valid_worker_result(invocation)
         body["task_id"] = "TASK-999"
         with self.assertRaisesRegex(ContractError, "task identity"):
+            self.worker.parse_result(
+                invocation,
+                canonical_json_bytes(body),
+            )
+
+    def test_worker_result_changed_paths_reject_directory_scope(
+        self,
+    ) -> None:
+        invocation = self.worker.prepare(
+            run_id=self.run_id,
+            task=self.task,
+            operation_id="WORK-TASK-001-A2",
+            attempt_no=2,
+            attempt_created_at="2026-07-23T10:00:00.123456+00:00",
+            attempt_token="ATTEMPT-WORKER-2",
+            worktree=self.worktree,
+            task_base_sha="a" * 40,
+            previous_failure=None,
+            artifact_prefix="tasks/TASK-001/attempts/002",
+        )
+        body = self.valid_worker_result(invocation)
+        body["changed_paths"] = ["src/"]
+        with self.assertRaisesRegex(ContractError, "changed path"):
             self.worker.parse_result(
                 invocation,
                 canonical_json_bytes(body),
