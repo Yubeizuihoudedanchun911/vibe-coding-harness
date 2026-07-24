@@ -18,6 +18,7 @@ from vibe.models import (
 
 def controller_config() -> FrozenRunConfig:
     return FrozenRunConfig(
+        contract_profile="legacy-v1",
         provider_name="codex-cli",
         max_workers=2,
         task_attempts=2,

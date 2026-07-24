@@ -19,6 +19,31 @@ OPERATION_ID_RE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z"
 )
 TOKEN_RE = re.compile(r"[A-Z][A-Z0-9_-]{0,191}\Z")
+LEGACY_CONTRACT_PROFILE = "legacy-v1"
+DOMAIN_CONTRACT_PROFILE = "domain-v2"
+CONTRACT_PROFILES = frozenset(
+    {LEGACY_CONTRACT_PROFILE, DOMAIN_CONTRACT_PROFILE}
+)
+WORK_KINDS = frozenset(
+    {
+        "implementation",
+        "testing",
+        "performance",
+        "code-quality",
+        "documentation",
+        "general",
+    }
+)
+DOMAINS = frozenset(
+    {
+        "frontend",
+        "backend",
+        "client",
+        "data",
+        "infrastructure",
+        "general",
+    }
+)
 
 
 class VibeError(ValueError):
@@ -140,6 +165,7 @@ class CommandAuthorization:
 
 @dataclass(frozen=True)
 class FrozenRunConfig:
+    contract_profile: str
     provider_name: str
     max_workers: int
     task_attempts: int
@@ -153,6 +179,7 @@ class FrozenRunConfig:
 
     def as_dict(self) -> dict[str, object]:
         return {
+            "contract_profile": self.contract_profile,
             "provider": {"name": self.provider_name},
             "scheduler": {"max_workers": self.max_workers},
             "limits": {

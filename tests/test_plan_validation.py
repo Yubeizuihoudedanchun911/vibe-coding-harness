@@ -22,6 +22,7 @@ from vibe.scheduler import (
 class PlanValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = FrozenRunConfig(
+            contract_profile="legacy-v1",
             provider_name="codex-cli",
             max_workers=2,
             task_attempts=3,

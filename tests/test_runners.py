@@ -72,6 +72,7 @@ class RunnerTests(unittest.TestCase):
         self.ledger = DispatchLedger(self.store, self.provider)
         self.registry = PromptRegistry.default()
         self.config = FrozenRunConfig(
+            contract_profile="legacy-v1",
             provider_name="codex-cli",
             max_workers=4,
             task_attempts=3,

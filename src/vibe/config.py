@@ -8,6 +8,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from vibe.models import (
+    CONTRACT_PROFILES,
+    DOMAIN_CONTRACT_PROFILE,
+    LEGACY_CONTRACT_PROFILE,
     CommandAuthorization,
     CommandSpec,
     ContractError,
@@ -25,7 +28,7 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 COMMAND_ID_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 PROJECT_TOP_FIELDS = {"provider", "scheduler", "limits", "verification"}
-FROZEN_TOP_FIELDS = PROJECT_TOP_FIELDS
+FROZEN_TOP_FIELDS = PROJECT_TOP_FIELDS | {"contract_profile"}
 LIMIT_FIELDS = {
     "task_attempts",
     "provider_retries",
@@ -44,6 +47,7 @@ EMPTY_COMMAND_AUTHORIZATION = CommandAuthorization(
 )
 
 DEFAULT_CONFIG = FrozenRunConfig(
+    contract_profile=DOMAIN_CONTRACT_PROFILE,
     provider_name="codex-cli",
     max_workers=4,
     task_attempts=3,
@@ -226,6 +230,12 @@ def _parse_config(
         "config",
         FROZEN_TOP_FIELDS if frozen else PROJECT_TOP_FIELDS,
     )
+    contract_profile = root.get(
+        "contract_profile",
+        LEGACY_CONTRACT_PROFILE if frozen else DOMAIN_CONTRACT_PROFILE,
+    )
+    if contract_profile not in CONTRACT_PROFILES:
+        raise ContractError("config.contract_profile is invalid")
     provider = _object(root.get("provider", {}), "provider", {"name"})
     scheduler = _object(
         root.get("scheduler", {}),
@@ -292,6 +302,7 @@ def _parse_config(
                 "command catalog and authorization mode are inconsistent"
             )
     return FrozenRunConfig(
+        contract_profile=contract_profile,
         provider_name=provider_name,
         max_workers=_plain_positive_int(
             scheduler.get("max_workers", DEFAULT_CONFIG.max_workers),

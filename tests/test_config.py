@@ -43,6 +43,30 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.max_plan_tasks, 128)
         self.assertEqual(config.command_authorization.mode, "EMPTY")
 
+    def test_contract_profile_is_frozen_and_legacy_missing_field_is_compatible(
+        self,
+    ) -> None:
+        current = load_run_config(self.target, {})
+        self.assertEqual(current.contract_profile, "domain-v2")
+        frozen = json.loads(frozen_config_bytes(current))
+        self.assertEqual(frozen["contract_profile"], "domain-v2")
+
+        del frozen["contract_profile"]
+        legacy = parse_frozen_config(frozen)
+        self.assertEqual(legacy.contract_profile, "legacy-v1")
+
+        frozen["contract_profile"] = "domain-v3"
+        with self.assertRaisesRegex(ContractError, "contract_profile"):
+            parse_frozen_config(frozen)
+
+    def test_project_config_cannot_override_contract_profile(self) -> None:
+        (self.target / "vibe.json").write_text(
+            '{"contract_profile":"legacy-v1"}\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ContractError, "unknown config fields"):
+            load_run_config(self.target, {})
+
     def test_cli_override_wins_and_the_result_can_be_frozen(self) -> None:
         (self.target / "vibe.json").write_text(
             json.dumps({"scheduler": {"max_workers": 2}}),

@@ -590,6 +590,7 @@ class Schema3MigrationTests(unittest.TestCase):
                 fault_hook=fault_hook,
             )
         config = load_run_config(self.target, {})
+        self.assertEqual(config.contract_profile, "domain-v2")
         worktrees = WorktreeManager(self.target)
         native = Controller(
             self.target,
