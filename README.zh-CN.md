@@ -33,6 +33,19 @@ Controller 是状态的唯一写入者。每个 Worker Attempt 使用新的 work
 compare-and-swap 更新 run ref；有界修复循环会把发现交给新的 Planner
 操作。
 
+Worker 路由使用三个正交概念：
+
+- `role` 表示生命周期职责。
+- `work_kind` 表示任务性质。
+- `domain` 表示技术方向；`client` 是统一的客户端方向。
+
+Planner 分配 `work_kind + domain`，Controller 校验这组值后再调度任务。
+domain 只是可审计的路由元数据，不会授予权限、选择模型或创建独立进程池。
+Worker 的命令和可写路径仍只由冻结的 Run 配置和 Task envelope 授权。
+已有 Run 在 profile 缺失时继续确定性使用 V1 `legacy-v1` 契约；只有新建
+Run 使用 V2 `domain-v2` 契约。进度真相仍是 `vibe status` 以及现有的
+任务/Attempt 状态，而不是技术方向。
+
 ## 环境要求
 
 - Git
@@ -177,6 +190,16 @@ python -m compileall -q src/vibe
 
 默认 CI 只运行离线测试。真实 Codex CLI smoke 必须通过对应环境变量显式
 启用，CI 不会默认联系 Provider。
+
+### 真实 Provider Prompt Profile 测试
+
+Prompt Profile 评测同样必须显式启用：
+
+```bash
+VIBE_CODEX_CLI_PROMPT_EVAL=1 \
+  PYTHONPATH=src \
+  python3 -m unittest tests.test_codex_cli_prompt_profiles -v
+```
 
 提交贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，公开使用问题请按
 [SUPPORT.md](SUPPORT.md) 选择正确入口，安全漏洞请按

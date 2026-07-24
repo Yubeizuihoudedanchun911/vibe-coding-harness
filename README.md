@@ -34,6 +34,22 @@ worktree, branch, provider process, and prompt context. Candidate commits are
 verified serially and update the run ref only through compare-and-swap. A
 bounded repair loop sends findings back to a fresh Planner operation.
 
+Worker routing uses three orthogonal concepts:
+
+- `role` identifies lifecycle responsibility.
+- `work_kind` identifies the nature of the task.
+- `domain` identifies its technical direction; `client` is the single,
+  unified client direction.
+
+The Planner assigns `work_kind + domain`, then the Controller validates the
+pair and dispatches the task. A domain is auditable routing metadata: it does
+not grant permissions, select a model, or create a separate process pool.
+Worker commands and writable paths remain authorized only by the frozen run
+configuration and Task envelope. Existing Runs continue on the V1
+`legacy-v1` contract when the profile is absent; only newly created Runs use
+the V2 `domain-v2` contract. `vibe status` and the existing task/Attempt state
+remain the source of truth for progress, not the technical direction.
+
 ## Requirements
 
 - Git
@@ -185,6 +201,16 @@ python -m compileall -q src/vibe
 The offline suite is the default gate. A real Codex CLI smoke test is opt-in
 through its documented environment flag; CI does not contact a Provider by
 default.
+
+### Real Provider prompt profiles
+
+The prompt profile evaluation is also opt-in:
+
+```bash
+VIBE_CODEX_CLI_PROMPT_EVAL=1 \
+  PYTHONPATH=src \
+  python3 -m unittest tests.test_codex_cli_prompt_profiles -v
+```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, use
 [SUPPORT.md](SUPPORT.md) for public help, and report vulnerabilities privately

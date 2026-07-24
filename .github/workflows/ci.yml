@@ -89,7 +89,8 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/vibe-wheel/bin/vibe" --help
           "$RUNNER_TEMP/vibe-wheel/bin/python" -m pip check
-          "$RUNNER_TEMP/vibe-wheel/bin/python" -c "from vibe.prompt_registry import PromptRegistry; r=PromptRegistry.default(); [r.load(i,1) for i in ('planner','workers/base','workers/implementation','workers/testing','workers/performance','workers/code-quality','workers/documentation','workers/general','evaluator')]; assert all((r.schema_root/n).is_file() for n in ('plan-v1.schema.json','worker-result-v1.schema.json','evaluation-v1.schema.json'))"
+          "$RUNNER_TEMP/vibe-wheel/bin/python" \
+            "$GITHUB_WORKSPACE/scripts/check_installed_resources.py"
 
       - name: Install sdist outside source tree
         run: |
@@ -98,7 +99,8 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/vibe-sdist/bin/vibe" --help
           "$RUNNER_TEMP/vibe-sdist/bin/python" -m pip check
-          "$RUNNER_TEMP/vibe-sdist/bin/python" -c "from vibe.prompt_registry import PromptRegistry; r=PromptRegistry.default(); [r.load(i,1) for i in ('planner','workers/base','workers/implementation','workers/testing','workers/performance','workers/code-quality','workers/documentation','workers/general','evaluator')]; assert all((r.schema_root/n).is_file() for n in ('plan-v1.schema.json','worker-result-v1.schema.json','evaluation-v1.schema.json'))"
+          "$RUNNER_TEMP/vibe-sdist/bin/python" \
+            "$GITHUB_WORKSPACE/scripts/check_installed_resources.py"
 
   macos:
     name: macOS process and Controller contracts

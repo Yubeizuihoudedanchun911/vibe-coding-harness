@@ -38,5 +38,41 @@ where = ["src"]
   "prompts/workers/documentation/*.md",
 ]
 "share/vibe/prompts/workers/general" = ["prompts/workers/general/*.md"]
+"share/vibe/prompts/workers/kinds/implementation" = [
+  "prompts/workers/kinds/implementation/*.md",
+]
+"share/vibe/prompts/workers/kinds/testing" = [
+  "prompts/workers/kinds/testing/*.md",
+]
+"share/vibe/prompts/workers/kinds/performance" = [
+  "prompts/workers/kinds/performance/*.md",
+]
+"share/vibe/prompts/workers/kinds/code-quality" = [
+  "prompts/workers/kinds/code-quality/*.md",
+]
+"share/vibe/prompts/workers/kinds/documentation" = [
+  "prompts/workers/kinds/documentation/*.md",
+]
+"share/vibe/prompts/workers/kinds/general" = [
+  "prompts/workers/kinds/general/*.md",
+]
+"share/vibe/prompts/workers/domains/frontend" = [
+  "prompts/workers/domains/frontend/*.md",
+]
+"share/vibe/prompts/workers/domains/backend" = [
+  "prompts/workers/domains/backend/*.md",
+]
+"share/vibe/prompts/workers/domains/client" = [
+  "prompts/workers/domains/client/*.md",
+]
+"share/vibe/prompts/workers/domains/data" = [
+  "prompts/workers/domains/data/*.md",
+]
+"share/vibe/prompts/workers/domains/infrastructure" = [
+  "prompts/workers/domains/infrastructure/*.md",
+]
+"share/vibe/prompts/workers/domains/general" = [
+  "prompts/workers/domains/general/*.md",
+]
 "share/vibe/prompts/evaluator" = ["prompts/evaluator/*.md"]
 "share/vibe/schemas" = ["schemas/*.json"]

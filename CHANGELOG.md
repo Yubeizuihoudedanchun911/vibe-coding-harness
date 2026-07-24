@@ -14,6 +14,8 @@ All notable changes are documented here. The format follows
   explicit Schema 3 migration.
 - Versioned Planner, base/specialist Worker, and Evaluator Prompts plus strict
   plan, Worker-result, and evaluation Schemas.
+- Plan V2 with orthogonal `role`, `work_kind`, and `domain` routing plus
+  versioned V2 Worker Prompt overlays for task nature and technical direction.
 - Path/resource-safe parallel specialist Workers with fresh worktree, branch,
   process, and context per Attempt.
 - Serial candidate verification, source/ref compare-and-swap, prepared
@@ -37,6 +39,8 @@ All notable changes are documented here. The format follows
 - Made `FAILED` terminal and foreground stop/resume explicit.
 - Frozen project command authorization and Prompt/Schema identities into every
   run.
+- New Runs now default to the `domain-v2` contract profile; existing Runs
+  without a stored profile deterministically continue with `legacy-v1`.
 
 ### Removed
 
@@ -51,3 +55,5 @@ All notable changes are documented here. The format follows
   forged artifacts, and incomplete migration mappings.
 - Keep default CI offline and prohibit automated merge, push, pull-request,
   package publication, or Provider network workflows.
+- Treat `domain` only as routing metadata: it cannot widen `path_scope` or
+  authorize additional Worker commands.

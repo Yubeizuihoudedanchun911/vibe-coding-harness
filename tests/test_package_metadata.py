@@ -25,28 +25,43 @@ class PackageMetadataTests(unittest.TestCase):
 
     def test_installed_prompt_and_schema_resources_are_complete(self) -> None:
         registry = PromptRegistry.default()
-        for prompt_id in (
-            "planner",
-            "workers/base",
-            "workers/implementation",
-            "workers/testing",
-            "workers/performance",
-            "workers/code-quality",
-            "workers/documentation",
-            "workers/general",
-            "evaluator",
-        ):
-            reference, body = registry.load(prompt_id, 1)
+        expected = (
+            ("planner", 1),
+            ("planner", 2),
+            ("workers/base", 1),
+            ("workers/base", 2),
+            ("workers/implementation", 1),
+            ("workers/testing", 1),
+            ("workers/performance", 1),
+            ("workers/code-quality", 1),
+            ("workers/documentation", 1),
+            ("workers/general", 1),
+            ("workers/kinds/implementation", 1),
+            ("workers/kinds/testing", 1),
+            ("workers/kinds/performance", 1),
+            ("workers/kinds/code-quality", 1),
+            ("workers/kinds/documentation", 1),
+            ("workers/kinds/general", 1),
+            ("workers/domains/frontend", 1),
+            ("workers/domains/backend", 1),
+            ("workers/domains/client", 1),
+            ("workers/domains/data", 1),
+            ("workers/domains/infrastructure", 1),
+            ("workers/domains/general", 1),
+            ("evaluator", 1),
+            ("evaluator", 2),
+        )
+        for prompt_id, version in expected:
+            reference, body = registry.load(prompt_id, version)
             self.assertTrue(body)
             self.assertTrue(reference.sha256.startswith("sha256:"))
         for schema_name in (
             "plan-v1.schema.json",
+            "plan-v2.schema.json",
             "worker-result-v1.schema.json",
             "evaluation-v1.schema.json",
         ):
-            self.assertTrue(
-                (registry.schema_root / schema_name).is_file()
-            )
+            self.assertTrue((registry.schema_root / schema_name).is_file())
 
     def test_runtime_and_distribution_versions_match(self) -> None:
         from vibe import __version__
